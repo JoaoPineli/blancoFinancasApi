@@ -2,13 +2,14 @@
 
 from fastapi import APIRouter, HTTPException, status
 
-from app.api.v1.dependencies import DbSession
+from app.api.v1.dependencies import CurrentUser, DbSession
 from app.api.v1.schemas.auth import (
     LoginRequest,
     RegisterRequest,
     RegisterResponse,
     TokenResponse,
 )
+from app.api.v1.schemas.user import UserResponse
 from app.api.v1.schemas.invitation import (
     ActivateAccountRequest,
     ActivateAccountResponse,
@@ -156,3 +157,28 @@ async def activate_account(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
+
+
+@router.get(
+    "/me",
+    response_model=UserResponse,
+    summary="Get current user profile",
+)
+async def get_current_profile(
+    current_user: CurrentUser,
+) -> UserResponse:
+    """Get the current authenticated user's profile.
+
+    Used for session restoration and token validation.
+    Requires valid JWT token in Authorization header.
+    """
+    return UserResponse(
+        id=str(current_user.id),
+        cpf=current_user.cpf.formatted if current_user.cpf else "",
+        email=current_user.email.value,
+        name=current_user.name,
+        role=current_user.role.value,
+        status=current_user.status.value,
+        phone=current_user.phone,
+        created_at=current_user.created_at,
+    )

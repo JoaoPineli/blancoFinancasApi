@@ -33,27 +33,6 @@ router = APIRouter()
 
 
 @router.get(
-    "/me",
-    response_model=UserResponse,
-    summary="Get current user profile",
-)
-async def get_current_profile(
-    current_user: CurrentUser,
-) -> UserResponse:
-    """Get the current authenticated user's profile."""
-    return UserResponse(
-        id=str(current_user.id),
-        cpf=current_user.cpf.formatted,
-        email=current_user.email.value,
-        name=current_user.name,
-        role=current_user.role.value,
-        status=current_user.status.value,
-        phone=current_user.phone,
-        created_at=current_user.created_at,
-    )
-
-
-@router.get(
     "/plans",
     response_model=PlanListResponse,
     summary="Get available plans",
@@ -70,13 +49,18 @@ async def get_plans(
         plans=[
             PlanResponse(
                 id=str(p.id),
-                name=p.name,
-                plan_type=p.plan_type.value,
+                title=p.title,
                 description=p.description,
-                monthly_installment_cents=p.monthly_installment_cents,
-                duration_months=p.duration_months,
-                fundo_garantidor_percentage=p.fundo_garantidor_percentage,
-                status=p.status.value,
+                min_value_cents=p.min_value_cents,
+                max_value_cents=p.max_value_cents,
+                min_duration_months=p.min_duration_months,
+                max_duration_months=p.max_duration_months,
+                admin_tax_value_cents=p.admin_tax_value_cents,
+                insurance_percent=p.insurance_percent,
+                guarantee_fund_percent_1=p.guarantee_fund_percent_1,
+                guarantee_fund_percent_2=p.guarantee_fund_percent_2,
+                guarantee_fund_threshold_cents=p.guarantee_fund_threshold_cents,
+                active=p.active,
             )
             for p in plans
         ]
@@ -99,7 +83,7 @@ async def create_contract(
 
     try:
         input_data = CreateContractInput(
-            client_id=current_user.id,
+            user_id=current_user.id,
             plan_id=UUID(request.plan_id),
         )
         contract = await service.create_contract(input_data)
@@ -138,7 +122,7 @@ async def accept_contract(
     try:
         input_data = AcceptContractInput(
             contract_id=UUID(request.contract_id),
-            client_id=current_user.id,
+            user_id=current_user.id,
         )
         contract = await service.accept_contract(input_data)
 

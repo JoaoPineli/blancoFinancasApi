@@ -47,7 +47,7 @@ def upgrade() -> None:
         sa.Column('monthly_installment_cents', sa.BigInteger(), nullable=False),
         sa.Column('duration_months', sa.Integer(), nullable=False),
         sa.Column('fundo_garantidor_percentage', sa.Numeric(5, 2), nullable=False),
-        sa.Column('status', sa.String(20), nullable=False, server_default='active'),
+        sa.Column('active', sa.Boolean(), nullable=False, server_default='true'),
         sa.Column('created_at', sa.DateTime(), nullable=False),
         sa.Column('updated_at', sa.DateTime(), nullable=False),
         sa.PrimaryKeyConstraint('id')

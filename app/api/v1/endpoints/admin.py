@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from io import BytesIO
+from typing import List
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -17,10 +18,19 @@ from app.api.v1.schemas.finance import (
     TransactionResponse,
 )
 from app.api.v1.schemas.invitation import InviteUserRequest, InviteUserResponse
+from app.api.v1.schemas.plan import (
+    CreatePlanRequest,
+    PlanListResponse,
+    PlanResponse,
+    PlanSummaryResponse,
+    UpdatePlanRequest,
+)
 from app.application.dtos.finance import ApproveWithdrawalInput
 from app.application.dtos.invitation import InviteUserInput
+from app.application.dtos.plan import CreatePlanInput, UpdatePlanInput
 from app.application.services.deposit_service import CreateDepositService
 from app.application.services.invitation_service import InvitationService
+from app.application.services.plan_service import PlanService
 from app.application.services.withdrawal_service import WithdrawalService
 from app.domain.entities.audit_log import AuditAction, AuditLog
 from app.domain.entities.user import UserStatus
@@ -135,7 +145,7 @@ async def list_users(
         users=[
             UserResponse(
                 id=str(c.id),
-                cpf=c.cpf.formatted,
+                cpf=c.cpf.formatted if c.cpf else None,
                 email=c.email.value,
                 name=c.name,
                 role=c.role.value,
@@ -204,7 +214,7 @@ async def change_user_status(
 
     return UserResponse(
         id=str(user.id),
-        cpf=user.cpf.formatted,
+        cpf=user.cpf.formatted if user.cpf else None,
         email=user.email.value,
         name=user.name,
         role=user.role.value,
@@ -518,3 +528,192 @@ async def download_reconciliation_report(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
+
+
+# ============================================================================
+# Plan Management Endpoints (Admin Only)
+# ============================================================================
+
+
+@router.get(
+    "/plans",
+    response_model=PlanListResponse,
+    summary="List all plans",
+)
+async def list_plans(
+    session: DbSession,
+    current_admin: CurrentAdmin,
+    search: str | None = Query(None, max_length=100, description="Search by plan title"),
+) -> PlanListResponse:
+    """List all plans with optional title search.
+
+    Admin only endpoint.
+    """
+    service = PlanService(session)
+    plans = await service.list_plans(title_search=search)
+
+    return PlanListResponse(
+        plans=[
+            PlanResponse(
+                id=str(p.id),
+                title=p.title,
+                description=p.description,
+                min_value_cents=p.min_value_cents,
+                max_value_cents=p.max_value_cents,
+                min_duration_months=p.min_duration_months,
+                max_duration_months=p.max_duration_months,
+                admin_tax_value_cents=p.admin_tax_value_cents,
+                insurance_percent=p.insurance_percent,
+                guarantee_fund_percent_1=p.guarantee_fund_percent_1,
+                guarantee_fund_percent_2=p.guarantee_fund_percent_2,
+                guarantee_fund_threshold_cents=p.guarantee_fund_threshold_cents,
+                active=p.active,
+            )
+            for p in plans
+        ],
+        total=len(plans),
+    )
+
+@router.get(
+        "/plans/summary",
+    response_model=List[PlanSummaryResponse],
+        summary="List plans summary",
+)
+async def list_plans_summary(
+    session: DbSession,
+    current_admin: CurrentAdmin,
+) -> List[PlanSummaryResponse]:
+    """List all plans with their IDs, titles, and active state.
+
+    Admin only endpoint.
+    """
+    service = PlanService(session)
+    plans = await service.list_plans()
+
+    return [
+        PlanSummaryResponse(
+            id=str(p.id),
+            title=p.title,
+            active=p.active,
+        )
+        for p in plans
+    ]
+
+
+@router.post(
+    "/plans",
+    response_model=PlanResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a new plan",
+)
+async def create_plan(
+    request: CreatePlanRequest,
+    session: DbSession,
+    current_admin: CurrentAdmin,
+) -> PlanResponse:
+    """Create a new plan.
+
+    Admin only endpoint. Creates audit log.
+    """
+    service = PlanService(session)
+
+    try:
+        input_data = CreatePlanInput(
+            title=request.title,
+            description=request.description,
+            min_value_cents=request.min_value_cents,
+            max_value_cents=request.max_value_cents,
+            min_duration_months=request.min_duration_months,
+            max_duration_months=request.max_duration_months,
+            admin_tax_value_cents=request.admin_tax_value_cents,
+            insurance_percent=request.insurance_percent,
+            guarantee_fund_percent_1=request.guarantee_fund_percent_1,
+            guarantee_fund_percent_2=request.guarantee_fund_percent_2,
+            guarantee_fund_threshold_cents=request.guarantee_fund_threshold_cents,
+            active=request.active,
+        )
+        result = await service.create_plan(input_data, admin_id=current_admin.id)
+
+        return PlanResponse(
+            id=str(result.id),
+            title=result.title,
+            description=result.description,
+            min_value_cents=result.min_value_cents,
+            max_value_cents=result.max_value_cents,
+            min_duration_months=result.min_duration_months,
+            max_duration_months=result.max_duration_months,
+            admin_tax_value_cents=result.admin_tax_value_cents,
+            insurance_percent=result.insurance_percent,
+            guarantee_fund_percent_1=result.guarantee_fund_percent_1,
+            guarantee_fund_percent_2=result.guarantee_fund_percent_2,
+            guarantee_fund_threshold_cents=result.guarantee_fund_threshold_cents,
+            active=result.active,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+
+@router.put(
+    "/plans/{plan_id}",
+    response_model=PlanResponse,
+    summary="Update a plan",
+)
+async def update_plan(
+    plan_id: str,
+    request: UpdatePlanRequest,
+    session: DbSession,
+    current_admin: CurrentAdmin,
+) -> PlanResponse:
+    """Update an existing plan.
+
+    This does NOT affect existing contracts.
+    Admin only endpoint. Creates audit log.
+    """
+    service = PlanService(session)
+
+    try:
+        input_data = UpdatePlanInput(
+            plan_id=UUID(plan_id),
+            title=request.title,
+            active=request.active,
+            description=request.description,
+            min_value_cents=request.min_value_cents,
+            max_value_cents=request.max_value_cents,
+            min_duration_months=request.min_duration_months,
+            max_duration_months=request.max_duration_months,
+            admin_tax_value_cents=request.admin_tax_value_cents,
+            insurance_percent=request.insurance_percent,
+            guarantee_fund_percent_1=request.guarantee_fund_percent_1,
+            guarantee_fund_percent_2=request.guarantee_fund_percent_2,
+            guarantee_fund_threshold_cents=request.guarantee_fund_threshold_cents,
+        )
+        result = await service.update_plan(input_data, admin_id=current_admin.id)
+
+        return PlanResponse(
+            id=str(result.id),
+            title=result.title,
+            description=result.description,
+            min_value_cents=result.min_value_cents,
+            max_value_cents=result.max_value_cents,
+            min_duration_months=result.min_duration_months,
+            max_duration_months=result.max_duration_months,
+            admin_tax_value_cents=result.admin_tax_value_cents,
+            insurance_percent=result.insurance_percent,
+            guarantee_fund_percent_1=result.guarantee_fund_percent_1,
+            guarantee_fund_percent_2=result.guarantee_fund_percent_2,
+            guarantee_fund_threshold_cents=result.guarantee_fund_threshold_cents,
+            active=result.active,
+        )
+    except PlanNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Plan not found",
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )

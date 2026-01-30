@@ -10,7 +10,7 @@ class UserResponse(BaseModel):
     """Response schema for user data."""
 
     id: str = Field(..., description="User UUID")
-    cpf: str = Field(..., description="User CPF (formatted)")
+    cpf: Optional[str] = Field(None, description="User CPF (formatted, None for invited users)")
     email: str = Field(..., description="User email")
     name: str = Field(..., description="User name")
     role: str = Field(..., description="User role")

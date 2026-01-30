@@ -11,13 +11,18 @@ class PlanResponse(BaseModel):
     """Response schema for plan data."""
 
     id: str = Field(..., description="Plan UUID")
-    name: str = Field(..., description="Plan name")
-    plan_type: str = Field(..., description="Plan type (geral or pequeno_agricultor)")
-    description: str = Field(..., description="Plan description")
-    monthly_installment_cents: int = Field(..., description="Monthly installment in cents")
-    duration_months: int = Field(..., description="Duration in months")
-    fundo_garantidor_percentage: Decimal = Field(..., description="Fundo Garantidor percentage")
-    status: str = Field(..., description="Plan status")
+    title: str = Field(..., description="Plan title")
+    description: str = Field(..., description="Plan description (Markdown)")
+    min_value_cents: int = Field(..., description="Minimum contracted value in cents")
+    max_value_cents: Optional[int] = Field(None, description="Maximum contracted value in cents")
+    min_duration_months: int = Field(..., description="Minimum duration in months")
+    max_duration_months: Optional[int] = Field(None, description="Maximum duration in months")
+    admin_tax_value_cents: int = Field(..., description="Fixed administrative tax in cents")
+    insurance_percent: Decimal = Field(..., description="Insurance percentage (0-100)")
+    guarantee_fund_percent_1: Decimal = Field(..., description="Guarantee fund tier 1 percentage")
+    guarantee_fund_percent_2: Decimal = Field(..., description="Guarantee fund tier 2 percentage")
+    guarantee_fund_threshold_cents: int = Field(..., description="Threshold for guarantee fund tier switch")
+    active: bool = Field(..., description="Plan active status")
 
 
 class PlanListResponse(BaseModel):

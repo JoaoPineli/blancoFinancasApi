@@ -16,7 +16,8 @@ from app.application.services.invitation_service import (
     ACTIVATION_TOKEN_EXPIRY_HOURS,
 )
 from app.application.services.activation_service import ActivationService
-from app.domain.entities.plan import Plan, PlanType
+
+from app.domain.entities.plan import Plan
 from app.domain.entities.user import User, UserRole, UserStatus
 from app.domain.entities.user_token import TokenType, UserToken
 from app.domain.entities.wallet import Wallet
@@ -184,12 +185,17 @@ class TestInvitationService:
         # Create a plan first
         plan_repo = PlanRepository(test_session)
         plan = Plan.create(
-            name="Test Plan",
-            plan_type=PlanType.GERAL,
-            description="Test plan",
-            monthly_installment_cents=100000,
-            duration_months=12,
-            fundo_garantidor_percentage=Decimal("1.0"),
+            title="Test Plan",
+            description="Test plan description",
+            min_value_cents=100000,
+            max_value_cents=10000000,
+            min_duration_months=6,
+            max_duration_months=36,
+            admin_tax_value_cents=5000,
+            insurance_percent=Decimal("2.5"),
+            guarantee_fund_percent_1=Decimal("1.0"),
+            guarantee_fund_percent_2=Decimal("1.3"),
+            guarantee_fund_threshold_cents=5000000,
         )
         await plan_repo.save(plan)
 
@@ -207,8 +213,17 @@ class TestInvitationService:
         # Verify user has plan assigned
         user_repo = UserRepository(test_session)
         user = await user_repo.get_by_id(result.user_id)
-
+        assert user is not None
         assert user.plan_id == plan.id
+
+        # Verify plan fields are persisted correctly
+        stored_plan = await plan_repo.get_by_id(plan.id)
+        assert stored_plan is not None
+        assert stored_plan.min_value_cents == 100000
+        assert stored_plan.max_value_cents == 10000000
+        assert stored_plan.admin_tax_value_cents == 5000
+        assert stored_plan.min_duration_months == 6
+        assert stored_plan.max_duration_months == 36
 
     @pytest.mark.asyncio
     async def test_invite_user_duplicate_email_raises_error(self, test_session, mock_email_sender):
@@ -269,10 +284,12 @@ class TestActivationService:
         import re
         sent_email = mock_email_sender.sent_emails[-1]
         token_match = re.search(r'token=([A-Za-z0-9_-]+)', sent_email.html_content)
+        assert token_match is not None
         raw_token = token_match.group(1)
 
         user_repo = UserRepository(session)
         user = await user_repo.get_by_id(result.user_id)
+        assert user is not None
 
         return user, raw_token
 
@@ -298,6 +315,7 @@ class TestActivationService:
         # Verify user is now active
         user_repo = UserRepository(test_session)
         updated_user = await user_repo.get_by_id(user.id)
+        assert updated_user is not None
 
         assert updated_user.status == UserStatus.ACTIVE
         assert updated_user.cpf is not None
@@ -326,6 +344,7 @@ class TestActivationService:
         token_repo = UserTokenRepository(test_session)
         token_hash = hash_token(token)
         stored_token = await token_repo.get_by_hash(token_hash)
+        assert stored_token is not None
 
         assert stored_token.is_used()
         assert stored_token.used_at is not None
@@ -381,6 +400,7 @@ class TestActivationService:
         token_repo = UserTokenRepository(test_session)
         token_hash = hash_token(token)
         stored_token = await token_repo.get_by_hash(token_hash)
+        assert stored_token is not None
         stored_token.expires_at = datetime.utcnow() - timedelta(hours=1)
         await token_repo.save(stored_token)
 

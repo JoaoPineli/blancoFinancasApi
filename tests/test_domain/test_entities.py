@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from app.domain.entities.user import User, UserRole, UserStatus
 from app.domain.entities.wallet import Wallet
-from app.domain.entities.plan import Plan, PlanType, PlanStatus
+from app.domain.entities.plan import Plan
 from app.domain.entities.transaction import Transaction, TransactionType, InstallmentType
 from app.domain.exceptions import InsufficientBalanceError, InvalidTransactionStatusError
 from app.domain.value_objects.cpf import CPF
@@ -29,6 +29,7 @@ class TestUser:
         
         assert user.status == UserStatus.ACTIVE
         assert user.role == UserRole.CLIENT
+        assert user.cpf is not None
         assert user.cpf.formatted == "529.982.247-25"
 
     def test_create_user_with_nickname_and_plan(self):
@@ -239,52 +240,166 @@ class TestPlan:
     def test_create_plan(self):
         """Test plan creation."""
         plan = Plan.create(
-            name="Plano Geral",
-            plan_type=PlanType.GERAL,
+            title="Plano Geral",
             description="Plano de investimento geral",
-            monthly_installment_cents=100000,  # R$ 1000.00
-            duration_months=12,
-            fundo_garantidor_percentage=Decimal("1.0"),
+            min_value_cents=100000,  # R$ 1000.00
+            max_value_cents=10000000,  # R$ 100,000.00
+            min_duration_months=6,
+            max_duration_months=36,
+            admin_tax_value_cents=5000,  # R$ 50.00
+            insurance_percent=Decimal("2.5"),
+            guarantee_fund_percent_1=Decimal("1.0"),
+            guarantee_fund_percent_2=Decimal("1.3"),
+            guarantee_fund_threshold_cents=5000000,  # R$ 50,000.00
         )
         
-        assert plan.status == PlanStatus.ACTIVE
-        assert plan.monthly_installment_amount == Decimal("1000.00")
+        assert plan.active
+        assert plan.title == "Plano Geral"
+        assert plan.min_value_cents == 100000
+        assert plan.max_value_cents == 10000000
 
-    def test_plan_fundo_garantidor_validation(self):
-        """Test Fundo Garantidor percentage validation."""
-        # Valid minimum
-        plan1 = Plan.create(
-            name="Plan 1",
-            plan_type=PlanType.GERAL,
+    def test_plan_percentage_validation(self):
+        """Test percentage validation (0-100 range)."""
+        # Valid percentages
+        plan = Plan.create(
+            title="Plan Valid",
             description="Test",
-            monthly_installment_cents=100000,
-            duration_months=12,
-            fundo_garantidor_percentage=Decimal("1.0"),
+            min_value_cents=100000,
+            max_value_cents=1000000,
+            min_duration_months=6,
+            max_duration_months=12,
+            admin_tax_value_cents=5000,
+            insurance_percent=Decimal("2.5"),
+            guarantee_fund_percent_1=Decimal("1.0"),
+            guarantee_fund_percent_2=Decimal("1.3"),
+            guarantee_fund_threshold_cents=500000,
         )
-        assert plan1.fundo_garantidor_percentage == Decimal("1.0")
-        
-        # Valid maximum
-        plan2 = Plan.create(
-            name="Plan 2",
-            plan_type=PlanType.PEQUENO_AGRICULTOR,
-            description="Test",
-            monthly_installment_cents=50000,
-            duration_months=24,
-            fundo_garantidor_percentage=Decimal("1.3"),
-        )
-        assert plan2.fundo_garantidor_percentage == Decimal("1.3")
+        assert plan.guarantee_fund_percent_1 == Decimal("1.0")
+        assert plan.guarantee_fund_percent_2 == Decimal("1.3")
 
-    def test_plan_invalid_fundo_garantidor_raises_error(self):
-        """Test invalid Fundo Garantidor percentage raises error."""
+    def test_plan_invalid_percentage_raises_error(self):
+        """Test invalid percentage raises error."""
         with pytest.raises(ValueError):
             Plan.create(
-                name="Invalid Plan",
-                plan_type=PlanType.GERAL,
+                title="Invalid Plan",
                 description="Test",
-                monthly_installment_cents=100000,
-                duration_months=12,
-                fundo_garantidor_percentage=Decimal("2.0"),  # Above 1.3%
+                min_value_cents=100000,
+                max_value_cents=1000000,
+                min_duration_months=6,
+                max_duration_months=12,
+                admin_tax_value_cents=5000,
+                insurance_percent=Decimal("150"),  # Above 100%
+                guarantee_fund_percent_1=Decimal("1.0"),
+                guarantee_fund_percent_2=Decimal("1.3"),
+                guarantee_fund_threshold_cents=500000,
             )
+
+    def test_plan_min_max_value_constraint(self):
+        """Test min/max value constraint validation."""
+        with pytest.raises(ValueError, match="Minimum value cannot exceed maximum value"):
+            Plan.create(
+                title="Invalid Plan",
+                description="Test",
+                min_value_cents=1000000,  # Greater than max
+                max_value_cents=100000,
+                min_duration_months=6,
+                max_duration_months=12,
+                admin_tax_value_cents=5000,
+                insurance_percent=Decimal("2.5"),
+                guarantee_fund_percent_1=Decimal("1.0"),
+                guarantee_fund_percent_2=Decimal("1.3"),
+                guarantee_fund_threshold_cents=500000,
+            )
+
+    def test_soft_delete_plan(self):
+        """Test soft deleting a plan."""
+        plan = Plan.create(
+            title="Plan to Delete",
+            description="Test plan for soft delete",
+            min_value_cents=100000,
+            max_value_cents=1000000,
+            min_duration_months=6,
+            max_duration_months=12,
+            admin_tax_value_cents=5000,
+            insurance_percent=Decimal("2.5"),
+            guarantee_fund_percent_1=Decimal("1.0"),
+            guarantee_fund_percent_2=Decimal("1.3"),
+            guarantee_fund_threshold_cents=500000,
+        )
+
+        assert plan.deleted_at is None
+        assert not plan.is_deleted()
+
+        plan.soft_delete()
+
+        assert plan.deleted_at is not None
+        assert plan.is_deleted()
+
+    def test_soft_delete_already_deleted_raises_error(self):
+        """Test soft deleting an already deleted plan raises error."""
+        plan = Plan.create(
+            title="Already Deleted Plan",
+            description="Test plan",
+            min_value_cents=100000,
+            max_value_cents=1000000,
+            min_duration_months=6,
+            max_duration_months=12,
+            admin_tax_value_cents=5000,
+            insurance_percent=Decimal("2.5"),
+            guarantee_fund_percent_1=Decimal("1.0"),
+            guarantee_fund_percent_2=Decimal("1.3"),
+            guarantee_fund_threshold_cents=500000,
+        )
+
+        plan.soft_delete()
+
+        with pytest.raises(ValueError, match="Plan is already deleted"):
+            plan.soft_delete()
+
+    def test_is_active_returns_false_when_deleted(self):
+        """Test is_active returns False when plan is soft deleted."""
+        plan = Plan.create(
+            title="Active Plan",
+            description="Test plan",
+            min_value_cents=100000,
+            max_value_cents=1000000,
+            min_duration_months=6,
+            max_duration_months=12,
+            admin_tax_value_cents=5000,
+            insurance_percent=Decimal("2.5"),
+            guarantee_fund_percent_1=Decimal("1.0"),
+            guarantee_fund_percent_2=Decimal("1.3"),
+            guarantee_fund_threshold_cents=500000,
+        )
+
+        assert plan.is_active()
+
+        plan.soft_delete()
+
+        # Even though active flag is True, is_active() should return False
+        assert plan.active is True
+        assert not plan.is_active()
+
+    def test_is_active_returns_false_when_deactivated(self):
+        """Test is_active returns False when plan is deactivated."""
+        plan = Plan.create(
+            title="Deactivated Plan",
+            description="Test plan",
+            min_value_cents=100000,
+            max_value_cents=1000000,
+            min_duration_months=6,
+            max_duration_months=12,
+            admin_tax_value_cents=5000,
+            insurance_percent=Decimal("2.5"),
+            guarantee_fund_percent_1=Decimal("1.0"),
+            guarantee_fund_percent_2=Decimal("1.3"),
+            guarantee_fund_threshold_cents=500000,
+        )
+
+        plan.deactivate()
+
+        assert not plan.is_active()
+        assert not plan.is_deleted()
 
 
 class TestTransaction:

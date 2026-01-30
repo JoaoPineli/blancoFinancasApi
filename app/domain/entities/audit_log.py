@@ -36,6 +36,7 @@ class AuditAction(Enum):
     # Admin actions
     PLAN_CREATED = "plan_created"
     PLAN_UPDATED = "plan_updated"
+    PLAN_DELETED = "plan_deleted"
     ADMIN_LOGIN = "admin_login"
 
 
