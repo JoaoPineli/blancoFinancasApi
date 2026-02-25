@@ -54,6 +54,9 @@ class UserModel(Base):
     transactions: Mapped[list["TransactionModel"]] = relationship(back_populates="user")
     plan: Mapped[Optional["PlanModel"]] = relationship(back_populates="invited_users")
     tokens: Mapped[list["UserTokenModel"]] = relationship(back_populates="user")
+    subscriptions: Mapped[list["UserPlanSubscriptionModel"]] = relationship(
+        back_populates="user"
+    )
 
 
 class PlanModel(Base):
@@ -92,6 +95,9 @@ class PlanModel(Base):
     # Relationships
     contracts: Mapped[list["ContractModel"]] = relationship(back_populates="plan")
     invited_users: Mapped[list["UserModel"]] = relationship(back_populates="plan")
+    subscriptions: Mapped[list["UserPlanSubscriptionModel"]] = relationship(
+        back_populates="plan"
+    )
 
 
 class ContractModel(Base):
@@ -172,6 +178,49 @@ class TransactionModel(Base):
     # Indexes
     __table_args__ = (
         Index("ix_transactions_user_type_status", "user_id", "transaction_type", "status"),
+    )
+
+
+class UserPlanSubscriptionModel(Base):
+    """SQLAlchemy model for user plan subscriptions.
+
+    A user can have zero, one, or many subscriptions,
+    including multiple subscriptions to the same plan.
+    """
+
+    __tablename__ = "user_plan_subscriptions"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
+    )
+    plan_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("plans.id"), nullable=False, index=True
+    )
+
+    # User-chosen parameters
+    target_amount_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    deposit_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    monthly_amount_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    # Snapshot of plan fees at time of subscription creation
+    admin_tax_value_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    insurance_percent: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False)
+    guarantee_fund_percent: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False)
+
+    # Pre-calculated total cost
+    total_cost_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    # Relationships
+    user: Mapped["UserModel"] = relationship(back_populates="subscriptions")
+    plan: Mapped["PlanModel"] = relationship(back_populates="subscriptions")
+
+    __table_args__ = (
+        Index("ix_user_plan_subscriptions_user_status", "user_id", "status"),
     )
 
 

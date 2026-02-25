@@ -33,6 +33,10 @@ class AuditAction(Enum):
     WITHDRAWAL_REJECTED = "withdrawal_rejected"
     YIELD_CREDITED = "yield_credited"
 
+    # Subscription actions
+    SUBSCRIPTION_CREATED = "subscription_created"
+    SUBSCRIPTION_CANCELLED = "subscription_cancelled"
+
     # Admin actions
     PLAN_CREATED = "plan_created"
     PLAN_UPDATED = "plan_updated"

@@ -117,6 +117,29 @@ class UserNotActivatedError(DomainError):
         super().__init__(message)
 
 
+class SubscriptionNotFoundError(DomainError):
+    """Raised when subscription is not found."""
+
+    def __init__(self, subscription_id: str) -> None:
+        super().__init__(f"Subscription not found: {subscription_id}")
+
+
+class NoViablePlanError(DomainError):
+    """Raised when no plan can satisfy the user's target amount."""
+
+    def __init__(self, target_amount_cents: int) -> None:
+        super().__init__(
+            f"No viable plan found for target amount: {target_amount_cents} cents"
+        )
+
+
+class InvalidSubscriptionError(DomainError):
+    """Raised when subscription parameters are invalid."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
 class UserAlreadyExistsError(DomainError):
     """Raised when attempting to create a user that already exists."""
 

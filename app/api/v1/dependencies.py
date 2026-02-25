@@ -18,7 +18,7 @@ DbSession = Annotated[AsyncSession, Depends(get_db_session)]
 
 async def get_current_user(
     authorization: Annotated[Optional[str], Header()] = None,
-    session: DbSession = None,
+    session: AsyncSession = Depends(get_db_session),
 ) -> User:
     """Dependency to get current authenticated user.
 
