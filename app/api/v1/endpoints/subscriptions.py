@@ -9,21 +9,26 @@ from app.api.v1.schemas.subscription import (
     CalculateCostRequest,
     CostResponse,
     CreateSubscriptionRequest,
+    DashboardDueStatusResponse,
+    DuePlanInfoResponse,
     RecommendationResponse,
     RecommendSubscriptionRequest,
     SubscriptionListResponse,
     SubscriptionResponse,
+    UpdateDepositDayRequest,
 )
 from app.application.dtos.subscription import (
     CalculateCostInput,
     CreateSubscriptionInput,
     RecommendSubscriptionInput,
+    UpdateDepositDayInput,
 )
 from app.application.services.subscription_service import SubscriptionService
 from app.domain.exceptions import (
     InvalidSubscriptionError,
     NoViablePlanError,
     PlanNotFoundError,
+    SubscriptionNotFoundError,
 )
 
 router = APIRouter()
@@ -53,6 +58,7 @@ async def list_subscriptions(
                 user_id=str(r.user_id),
                 plan_id=str(r.plan_id),
                 plan_title=r.plan_title,
+                name=r.name,
                 target_amount_cents=r.target_amount_cents,
                 deposit_count=r.deposit_count,
                 monthly_amount_cents=r.monthly_amount_cents,
@@ -60,6 +66,9 @@ async def list_subscriptions(
                 insurance_percent=r.insurance_percent,
                 guarantee_fund_percent=r.guarantee_fund_percent,
                 total_cost_cents=r.total_cost_cents,
+                deposit_day_of_month=r.deposit_day_of_month,
+                next_due_date=r.next_due_date,
+                has_overdue_deposit=r.has_overdue_deposit,
                 status=r.status,
                 created_at=r.created_at,
             )
@@ -197,6 +206,8 @@ async def create_subscription(
             target_amount_cents=request.target_amount_cents,
             deposit_count=request.deposit_count,
             monthly_amount_cents=request.monthly_amount_cents,
+            name=request.name,
+            deposit_day_of_month=request.deposit_day_of_month,
         )
         result = await service.create_subscription(input_data)
 
@@ -205,6 +216,7 @@ async def create_subscription(
             user_id=str(result.user_id),
             plan_id=str(result.plan_id),
             plan_title=result.plan_title,
+            name=result.name,
             target_amount_cents=result.target_amount_cents,
             deposit_count=result.deposit_count,
             monthly_amount_cents=result.monthly_amount_cents,
@@ -212,6 +224,9 @@ async def create_subscription(
             insurance_percent=result.insurance_percent,
             guarantee_fund_percent=result.guarantee_fund_percent,
             total_cost_cents=result.total_cost_cents,
+            deposit_day_of_month=result.deposit_day_of_month,
+            next_due_date=result.next_due_date,
+            has_overdue_deposit=result.has_overdue_deposit,
             status=result.status,
             created_at=result.created_at,
         )
@@ -230,3 +245,104 @@ async def create_subscription(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
+
+
+@router.patch(
+    "/{subscription_id}/deposit-day",
+    response_model=SubscriptionResponse,
+    summary="Update deposit day of month",
+)
+async def update_deposit_day(
+    subscription_id: str,
+    request: UpdateDepositDayRequest,
+    session: DbSession,
+    current_user: CurrentUser,
+) -> SubscriptionResponse:
+    """Change the deposit day-of-month for a subscription.
+
+    Recomputes next_due_date to the next occurrence of the new day.
+    Allowed values: 1, 5, 10, 15, 20, 25.
+    """
+    service = SubscriptionService(session)
+
+    try:
+        input_data = UpdateDepositDayInput(
+            user_id=current_user.id,
+            subscription_id=UUID(subscription_id),
+            deposit_day_of_month=request.deposit_day_of_month,
+        )
+        result = await service.update_deposit_day(input_data)
+
+        return SubscriptionResponse(
+            id=str(result.id),
+            user_id=str(result.user_id),
+            plan_id=str(result.plan_id),
+            plan_title=result.plan_title,
+            name=result.name,
+            target_amount_cents=result.target_amount_cents,
+            deposit_count=result.deposit_count,
+            monthly_amount_cents=result.monthly_amount_cents,
+            admin_tax_value_cents=result.admin_tax_value_cents,
+            insurance_percent=result.insurance_percent,
+            guarantee_fund_percent=result.guarantee_fund_percent,
+            total_cost_cents=result.total_cost_cents,
+            deposit_day_of_month=result.deposit_day_of_month,
+            next_due_date=result.next_due_date,
+            has_overdue_deposit=result.has_overdue_deposit,
+            status=result.status,
+            created_at=result.created_at,
+        )
+    except SubscriptionNotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=e.message,
+        )
+    except InvalidSubscriptionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=e.message,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+
+@router.get(
+    "/dashboard/due-status",
+    response_model=DashboardDueStatusResponse,
+    summary="Get dashboard due/overdue status",
+)
+async def get_dashboard_due_status(
+    session: DbSession,
+    current_user: CurrentUser,
+) -> DashboardDueStatusResponse:
+    """Get due/overdue subscription status for the dashboard banner.
+
+    Performs lazy update: flags newly-overdue subscriptions in the DB.
+    Returns arrays of due-today and overdue plan info for the banner.
+    """
+    service = SubscriptionService(session)
+    result = await service.get_dashboard_due_status(current_user.id)
+
+    return DashboardDueStatusResponse(
+        overdue_plans=[
+            DuePlanInfoResponse(
+                subscription_id=p.subscription_id,
+                plan_title=p.plan_title,
+                name=p.name,
+                next_due_date=p.next_due_date,
+            )
+            for p in result.overdue_plans
+        ],
+        due_today_plans=[
+            DuePlanInfoResponse(
+                subscription_id=p.subscription_id,
+                plan_title=p.plan_title,
+                name=p.name,
+                next_due_date=p.next_due_date,
+            )
+            for p in result.due_today_plans
+        ],
+    )

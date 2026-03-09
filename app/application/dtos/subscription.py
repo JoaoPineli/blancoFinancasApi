@@ -1,8 +1,9 @@
 """Subscription DTOs for application layer."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import date
 from decimal import Decimal
-from typing import Optional
+from typing import List, Optional
 from uuid import UUID
 
 
@@ -33,6 +34,17 @@ class CreateSubscriptionInput:
     target_amount_cents: int
     deposit_count: int
     monthly_amount_cents: int
+    name: str = ""
+    deposit_day_of_month: int = 1
+
+
+@dataclass
+class UpdateDepositDayInput:
+    """Input for updating the deposit day-of-month on a subscription."""
+
+    user_id: UUID
+    subscription_id: UUID
+    deposit_day_of_month: int
 
 
 @dataclass
@@ -43,6 +55,7 @@ class SubscriptionResult:
     user_id: UUID
     plan_id: UUID
     plan_title: str
+    name: str
     target_amount_cents: int
     deposit_count: int
     monthly_amount_cents: int
@@ -50,6 +63,9 @@ class SubscriptionResult:
     insurance_percent: Decimal
     guarantee_fund_percent: Decimal
     total_cost_cents: int
+    deposit_day_of_month: int
+    next_due_date: str  # ISO date string
+    has_overdue_deposit: bool
     status: str
     created_at: str  # ISO format string
 
@@ -84,3 +100,26 @@ class CostResultDTO:
     guarantee_fund_percent: Decimal
     monthly_amount_cents: int
     deposit_count: int
+
+
+# ------------------------------------------------------------------
+# Dashboard DTOs
+# ------------------------------------------------------------------
+
+
+@dataclass
+class DuePlanInfo:
+    """Minimal info about a subscription that is due or overdue."""
+
+    subscription_id: str
+    plan_title: str
+    name: str
+    next_due_date: str  # ISO date
+
+
+@dataclass
+class DashboardDueStatus:
+    """Due/overdue status for the dashboard banner."""
+
+    overdue_plans: List[DuePlanInfo] = field(default_factory=list)
+    due_today_plans: List[DuePlanInfo] = field(default_factory=list)

@@ -148,6 +148,7 @@ class TestSubscriptionCreationAuthorization:
                 "target_amount_cents": 10_000_00,
                 "deposit_count": 12,
                 "monthly_amount_cents": 834_00,
+                "name": "Minha Poupança",
             },
         )
 
@@ -173,6 +174,7 @@ class TestSubscriptionCreationAuthorization:
                 "target_amount_cents": 10_000_00,
                 "deposit_count": 12,
                 "monthly_amount_cents": 834_00,
+                "name": "Test",
             },
         )
 

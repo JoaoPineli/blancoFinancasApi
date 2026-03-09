@@ -43,6 +43,25 @@ class CreateSubscriptionRequest(BaseModel):
     monthly_amount_cents: int = Field(
         ..., gt=0, description="Monthly amount in cents"
     )
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=120,
+        description="User-given name for this subscription",
+    )
+    deposit_day_of_month: int = Field(
+        1,
+        description="Day of month for deposits (allowed: 1, 5, 10, 15, 20, 25)",
+    )
+
+
+class UpdateDepositDayRequest(BaseModel):
+    """Request schema for updating the deposit day-of-month."""
+
+    deposit_day_of_month: int = Field(
+        ...,
+        description="Day of month for deposits (allowed: 1, 5, 10, 15, 20, 25)",
+    )
 
 
 class SubscriptionResponse(BaseModel):
@@ -52,6 +71,7 @@ class SubscriptionResponse(BaseModel):
     user_id: str = Field(..., description="User UUID")
     plan_id: str = Field(..., description="Plan UUID")
     plan_title: str = Field(..., description="Plan title at time of display")
+    name: str = Field(..., description="Cosmetic user-given name")
     target_amount_cents: int = Field(..., description="Total target amount in cents")
     deposit_count: int = Field(..., description="Number of deposits")
     monthly_amount_cents: int = Field(..., description="Monthly amount in cents")
@@ -65,6 +85,13 @@ class SubscriptionResponse(BaseModel):
         ..., description="Guarantee fund percentage snapshot"
     )
     total_cost_cents: int = Field(..., description="Total fees/taxes in cents")
+    deposit_day_of_month: int = Field(
+        ..., description="Day of month for deposits"
+    )
+    next_due_date: str = Field(..., description="Next due date (ISO format)")
+    has_overdue_deposit: bool = Field(
+        ..., description="Whether subscription has an overdue deposit"
+    )
     status: str = Field(..., description="Subscription status")
     created_at: str = Field(..., description="Creation date (ISO format)")
 
@@ -135,4 +162,24 @@ class CostResponse(BaseModel):
     )
     deposit_count: int = Field(
         ..., description="Deposit count used for calculation"
+    )
+
+
+class DuePlanInfoResponse(BaseModel):
+    """Minimal info about a subscription that is due or overdue."""
+
+    subscription_id: str = Field(..., description="Subscription UUID")
+    plan_title: str = Field(..., description="Plan title for display")
+    name: str = Field(..., description="Cosmetic user-given name")
+    next_due_date: str = Field(..., description="Next due date (ISO format)")
+
+
+class DashboardDueStatusResponse(BaseModel):
+    """Dashboard due/overdue status for the banner."""
+
+    overdue_plans: List[DuePlanInfoResponse] = Field(
+        default_factory=list, description="Subscriptions that are overdue"
+    )
+    due_today_plans: List[DuePlanInfoResponse] = Field(
+        default_factory=list, description="Subscriptions due today"
     )

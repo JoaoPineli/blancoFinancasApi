@@ -7,11 +7,16 @@ the chosen parameters and applicable fees at creation time.
 
 from __future__ import annotations
 
+import datetime as _dt
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, date
 from decimal import Decimal
 from enum import Enum
+from typing import Optional
 from uuid import UUID, uuid4
+
+# Allowed deposit days-of-month (business rule)
+ALLOWED_DEPOSIT_DAYS: frozenset[int] = frozenset({1, 5, 10, 15, 20, 25})
 
 
 class SubscriptionStatus(Enum):
@@ -41,6 +46,9 @@ class UserPlanSubscription:
     user_id: UUID
     plan_id: UUID
 
+    # Cosmetic user-given name for this subscription
+    name: str
+
     # User-chosen parameters
     target_amount_cents: int
     deposit_count: int
@@ -54,7 +62,13 @@ class UserPlanSubscription:
     # Pre-calculated total cost (fees + taxes)
     total_cost_cents: int
 
-    status: SubscriptionStatus
+    # Deposit due-date fields
+    deposit_day_of_month: int = 1
+    next_due_date: date = field(default_factory=date.today)
+    has_overdue_deposit: bool = False
+    overdue_marked_at: Optional[datetime] = None
+
+    status: SubscriptionStatus = SubscriptionStatus.ACTIVE
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
 
@@ -82,6 +96,10 @@ class UserPlanSubscription:
             raise ValueError("Guarantee fund percent cannot be negative")
         if self.total_cost_cents < 0:
             raise ValueError("Total cost cannot be negative")
+        if self.deposit_day_of_month not in ALLOWED_DEPOSIT_DAYS:
+            raise ValueError(
+                f"deposit_day_of_month must be one of {sorted(ALLOWED_DEPOSIT_DAYS)}"
+            )
 
     @classmethod
     def create(
@@ -95,6 +113,9 @@ class UserPlanSubscription:
         insurance_percent: Decimal,
         guarantee_fund_percent: Decimal,
         total_cost_cents: int,
+        name: str = "",
+        deposit_day_of_month: int = 1,
+        today_local: Optional[date] = None,
     ) -> UserPlanSubscription:
         """Factory method to create a new subscription.
 
@@ -108,6 +129,9 @@ class UserPlanSubscription:
             insurance_percent: Snapshot of plan insurance percentage.
             guarantee_fund_percent: Selected guarantee fund tier percentage.
             total_cost_cents: Pre-calculated total fees/taxes in cents.
+            name: Cosmetic user-given name for this subscription.
+            deposit_day_of_month: Fixed day-of-month for deposits.
+            today_local: Current date in user timezone for computing next_due_date.
 
         Returns:
             A new UserPlanSubscription in ACTIVE status.
@@ -115,11 +139,17 @@ class UserPlanSubscription:
         Raises:
             ValueError: If any invariant is violated.
         """
+        from app.domain.services.due_date_service import DueDateService
+
         now = datetime.utcnow()
+        ref_date = today_local or date.today()
+        next_due = DueDateService.compute_next_due_date(deposit_day_of_month, ref_date)
+
         return cls(
             id=uuid4(),
             user_id=user_id,
             plan_id=plan_id,
+            name=name,
             target_amount_cents=target_amount_cents,
             deposit_count=deposit_count,
             monthly_amount_cents=monthly_amount_cents,
@@ -127,10 +157,71 @@ class UserPlanSubscription:
             insurance_percent=insurance_percent,
             guarantee_fund_percent=guarantee_fund_percent,
             total_cost_cents=total_cost_cents,
+            deposit_day_of_month=deposit_day_of_month,
+            next_due_date=next_due,
+            has_overdue_deposit=False,
+            overdue_marked_at=None,
             status=SubscriptionStatus.ACTIVE,
             created_at=now,
             updated_at=now,
         )
+
+    # ------------------------------------------------------------------
+    # Deposit due-date mutation methods
+    # ------------------------------------------------------------------
+
+    def set_deposit_day(self, day: int, today_local: date) -> None:
+        """Change the deposit day-of-month and recompute next_due_date.
+
+        Args:
+            day: New day-of-month (must be in ALLOWED_DEPOSIT_DAYS).
+            today_local: Current calendar date in user timezone.
+
+        Raises:
+            ValueError: If day is not in the allowed set.
+        """
+        from app.domain.services.due_date_service import DueDateService
+
+        if day not in ALLOWED_DEPOSIT_DAYS:
+            raise ValueError(
+                f"deposit_day_of_month must be one of {sorted(ALLOWED_DEPOSIT_DAYS)}"
+            )
+        self.deposit_day_of_month = day
+        self.next_due_date = DueDateService.compute_next_due_date(day, today_local)
+        self.updated_at = datetime.utcnow()
+
+    def mark_overdue(self, now_utc: Optional[datetime] = None) -> bool:
+        """Lazily mark this subscription as overdue.
+
+        Only sets the flag if it is not already set (idempotent).
+
+        Args:
+            now_utc: Current UTC timestamp. Defaults to utcnow().
+
+        Returns:
+            True if the flag was actually changed (first time), False otherwise.
+        """
+        if self.has_overdue_deposit:
+            return False
+        self.has_overdue_deposit = True
+        self.overdue_marked_at = now_utc or datetime.utcnow()
+        self.updated_at = datetime.utcnow()
+        return True
+
+    def clear_overdue_and_advance(self, today_local: date) -> None:
+        """Clear overdue flag and advance next_due_date after payment.
+
+        Args:
+            today_local: Current calendar date in user timezone.
+        """
+        from app.domain.services.due_date_service import DueDateService
+
+        self.has_overdue_deposit = False
+        self.overdue_marked_at = None
+        self.next_due_date = DueDateService.advance_due_date(
+            self.deposit_day_of_month, self.next_due_date
+        )
+        self.updated_at = datetime.utcnow()
 
     def cancel(self) -> None:
         """Cancel the subscription.

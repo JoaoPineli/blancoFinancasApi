@@ -1,6 +1,6 @@
 """SQLAlchemy ORM models."""
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
@@ -8,6 +8,8 @@ from uuid import UUID
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
+    Date,
     DateTime,
     Enum,
     ForeignKey,
@@ -198,6 +200,9 @@ class UserPlanSubscriptionModel(Base):
         PGUUID(as_uuid=True), ForeignKey("plans.id"), nullable=False, index=True
     )
 
+    # Cosmetic user-given name
+    name: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+
     # User-chosen parameters
     target_amount_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
     deposit_count: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -211,6 +216,14 @@ class UserPlanSubscriptionModel(Base):
     # Pre-calculated total cost
     total_cost_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
+    # Deposit due-date fields
+    deposit_day_of_month: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    next_due_date: Mapped[date] = mapped_column(Date, nullable=False)
+    has_overdue_deposit: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    overdue_marked_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
@@ -221,6 +234,17 @@ class UserPlanSubscriptionModel(Base):
 
     __table_args__ = (
         Index("ix_user_plan_subscriptions_user_status", "user_id", "status"),
+        Index("ix_user_plan_subscriptions_user_due", "user_id", "next_due_date"),
+        Index(
+            "ix_user_plan_subscriptions_user_overdue_due",
+            "user_id",
+            "has_overdue_deposit",
+            "next_due_date",
+        ),
+        CheckConstraint(
+            "deposit_day_of_month IN (1, 5, 10, 15, 20, 25)",
+            name="ck_subscriptions_deposit_day",
+        ),
     )
 
 

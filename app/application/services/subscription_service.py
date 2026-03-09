@@ -1,7 +1,10 @@
 """Subscription service for managing user plan subscriptions."""
 
+from datetime import date, datetime, timezone
 from typing import List
 from uuid import UUID
+
+import zoneinfo
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,12 +12,15 @@ from app.application.dtos.subscription import (
     CalculateCostInput,
     CostResultDTO,
     CreateSubscriptionInput,
+    DashboardDueStatus,
+    DuePlanInfo,
     RecommendationResultDTO,
     RecommendSubscriptionInput,
     SubscriptionResult,
+    UpdateDepositDayInput,
 )
 from app.domain.entities.audit_log import AuditAction, AuditLog
-from app.domain.entities.subscription import UserPlanSubscription
+from app.domain.entities.subscription import ALLOWED_DEPOSIT_DAYS, UserPlanSubscription
 from app.domain.exceptions import (
     InvalidSubscriptionError,
     NoViablePlanError,
@@ -30,6 +36,9 @@ from app.infrastructure.db.repositories.plan_repository import PlanRepository
 from app.infrastructure.db.repositories.subscription_repository import (
     SubscriptionRepository,
 )
+
+# Default timezone when user.timezone is absent
+_DEFAULT_TZ = zoneinfo.ZoneInfo("America/Sao_Paulo")
 
 
 class SubscriptionService:
@@ -232,6 +241,9 @@ class SubscriptionService:
             insurance_percent=plan.insurance_percent,
             guarantee_fund_percent=cost.guarantee_fund_percent,
             total_cost_cents=cost.total_cost_cents,
+            name=input_data.name,
+            deposit_day_of_month=input_data.deposit_day_of_month,
+            today_local=self._today_local(),
         )
 
         # Persist
@@ -274,6 +286,7 @@ class SubscriptionService:
             user_id=subscription.user_id,
             plan_id=subscription.plan_id,
             plan_title=plan_title,
+            name=subscription.name,
             target_amount_cents=subscription.target_amount_cents,
             deposit_count=subscription.deposit_count,
             monthly_amount_cents=subscription.monthly_amount_cents,
@@ -281,6 +294,161 @@ class SubscriptionService:
             insurance_percent=subscription.insurance_percent,
             guarantee_fund_percent=subscription.guarantee_fund_percent,
             total_cost_cents=subscription.total_cost_cents,
+            deposit_day_of_month=subscription.deposit_day_of_month,
+            next_due_date=subscription.next_due_date.isoformat(),
+            has_overdue_deposit=subscription.has_overdue_deposit,
             status=subscription.status.value,
             created_at=subscription.created_at.isoformat(),
         )
+
+    # ------------------------------------------------------------------
+    # Deposit day update
+    # ------------------------------------------------------------------
+
+    async def update_deposit_day(
+        self, input_data: UpdateDepositDayInput
+    ) -> SubscriptionResult:
+        """Update the deposit day-of-month for a subscription.
+
+        Recomputes next_due_date based on the new day.
+
+        Args:
+            input_data: Contains subscription_id, user_id, deposit_day_of_month.
+
+        Returns:
+            Updated SubscriptionResult.
+
+        Raises:
+            SubscriptionNotFoundError: If subscription not found or not owned.
+            InvalidSubscriptionError: If day is not allowed or sub not active.
+        """
+        subscription = await self._subscription_repo.get_by_id(
+            input_data.subscription_id
+        )
+        if not subscription or subscription.user_id != input_data.user_id:
+            raise SubscriptionNotFoundError(str(input_data.subscription_id))
+
+        if not subscription.is_active():
+            raise InvalidSubscriptionError("Subscription is not active")
+
+        if input_data.deposit_day_of_month not in ALLOWED_DEPOSIT_DAYS:
+            raise InvalidSubscriptionError(
+                f"deposit_day_of_month must be one of {sorted(ALLOWED_DEPOSIT_DAYS)}"
+            )
+
+        today_local = self._today_local()
+        subscription.set_deposit_day(input_data.deposit_day_of_month, today_local)
+
+        saved = await self._subscription_repo.save(subscription)
+
+        plan = await self._plan_repo.get_by_id(saved.plan_id, include_deleted=True)
+        plan_title = plan.title if plan else "Plano removido"
+
+        await self._session.commit()
+        return self._to_result(saved, plan_title)
+
+    # ------------------------------------------------------------------
+    # Dashboard lazy update
+    # ------------------------------------------------------------------
+
+    async def get_dashboard_due_status(
+        self, user_id: UUID
+    ) -> DashboardDueStatus:
+        """Compute due/overdue status and lazily flag overdue subscriptions.
+
+        Steps:
+        1. Compute today_local in user timezone.
+        2. Query subscriptions where next_due_date <= today_local.
+        3. Partition into overdue (< today) and due_today (== today).
+        4. Bulk-update DB flags for newly-overdue subscriptions.
+        5. Return status DTO for the dashboard banner.
+
+        Args:
+            user_id: The authenticated user's UUID.
+
+        Returns:
+            DashboardDueStatus with overdue_plans and due_today_plans.
+        """
+        today_local = self._today_local()
+        now_utc = datetime.now(timezone.utc)
+
+        subs = await self._subscription_repo.get_active_due_or_overdue(
+            user_id, today_local
+        )
+
+        overdue_plans: list[DuePlanInfo] = []
+        due_today_plans: list[DuePlanInfo] = []
+
+        for sub in subs:
+            plan = await self._plan_repo.get_by_id(sub.plan_id, include_deleted=True)
+            plan_title = plan.title if plan else "Plano removido"
+            info = DuePlanInfo(
+                subscription_id=str(sub.id),
+                plan_title=plan_title,
+                name=sub.name,
+                next_due_date=sub.next_due_date.isoformat(),
+            )
+            if sub.next_due_date < today_local:
+                overdue_plans.append(info)
+            else:
+                due_today_plans.append(info)
+
+        # Lazy bulk update: flag newly overdue rows
+        if overdue_plans:
+            await self._subscription_repo.bulk_mark_overdue(
+                user_id, today_local, now_utc
+            )
+
+        return DashboardDueStatus(
+            overdue_plans=overdue_plans,
+            due_today_plans=due_today_plans,
+        )
+
+    # ------------------------------------------------------------------
+    # Payment recording helper
+    # ------------------------------------------------------------------
+
+    async def record_payment_for_subscription(
+        self, subscription_id: UUID, user_id: UUID
+    ) -> SubscriptionResult:
+        """Clear overdue flag and advance next_due_date after payment.
+
+        Must be called when a deposit for this subscription is confirmed.
+
+        Args:
+            subscription_id: UUID of the subscription.
+            user_id: For authorization check.
+
+        Returns:
+            Updated SubscriptionResult.
+
+        Raises:
+            SubscriptionNotFoundError: If not found / not owned.
+        """
+        subscription = await self._subscription_repo.get_by_id(subscription_id)
+        if not subscription or subscription.user_id != user_id:
+            raise SubscriptionNotFoundError(str(subscription_id))
+
+        today_local = self._today_local()
+        subscription.clear_overdue_and_advance(today_local)
+
+        saved = await self._subscription_repo.save(subscription)
+
+        plan = await self._plan_repo.get_by_id(saved.plan_id, include_deleted=True)
+        plan_title = plan.title if plan else "Plano removido"
+
+        await self._session.commit()
+        return self._to_result(saved, plan_title)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _today_local() -> date:
+        """Return current calendar date in the default timezone.
+
+        Uses America/Sao_Paulo. If per-user timezones are added later,
+        this method should accept the user entity and read user.timezone.
+        """
+        return datetime.now(_DEFAULT_TZ).date()
