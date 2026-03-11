@@ -36,6 +36,14 @@ class AuditAction(Enum):
     # Subscription actions
     SUBSCRIPTION_CREATED = "subscription_created"
     SUBSCRIPTION_CANCELLED = "subscription_cancelled"
+    SUBSCRIPTION_COMPLETED = "subscription_completed"
+
+    # Installment payment actions
+    INSTALLMENT_PAYMENT_CREATED = "installment_payment_created"
+    INSTALLMENT_PAYMENT_CONFIRMED = "installment_payment_confirmed"
+
+    # Plan withdrawal actions
+    PLAN_WITHDRAWAL_REQUESTED = "plan_withdrawal_requested"
 
     # Admin actions
     PLAN_CREATED = "plan_created"

@@ -216,6 +216,9 @@ class UserPlanSubscriptionModel(Base):
     # Pre-calculated total cost
     total_cost_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
+    # Payment tracking
+    deposits_paid: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
     # Deposit due-date fields
     deposit_day_of_month: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     next_due_date: Mapped[date] = mapped_column(Date, nullable=False)
@@ -300,5 +303,73 @@ class UserTokenModel(Base):
 
     __table_args__ = (
         Index("ix_user_tokens_user_type", "user_id", "token_type"),
+    )
+
+
+class InstallmentPaymentModel(Base):
+    """SQLAlchemy model for grouped installment payments.
+
+    A single Pix payment that covers one or more subscription installments.
+    """
+
+    __tablename__ = "installment_payments"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
+    total_amount_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    pix_qr_code_data: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    pix_transaction_id: Mapped[Optional[str]] = mapped_column(
+        String(100), nullable=True, unique=True, index=True
+    )
+    expiration_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    # Relationships
+    items: Mapped[list["InstallmentPaymentItemModel"]] = relationship(
+        back_populates="payment", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("ix_installment_payments_user_status", "user_id", "status"),
+    )
+
+
+class InstallmentPaymentItemModel(Base):
+    """SQLAlchemy model for individual installments within a grouped payment."""
+
+    __tablename__ = "installment_payment_items"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    payment_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("installment_payments.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    subscription_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("user_plan_subscriptions.id"),
+        nullable=False,
+        index=True,
+    )
+    subscription_name: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    plan_title: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    amount_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    installment_number: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # Relationships
+    payment: Mapped["InstallmentPaymentModel"] = relationship(back_populates="items")
+
+    __table_args__ = (
+        Index(
+            "ix_installment_payment_items_sub_payment",
+            "subscription_id",
+            "payment_id",
+        ),
     )
 

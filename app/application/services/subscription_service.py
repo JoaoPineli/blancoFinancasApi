@@ -299,6 +299,7 @@ class SubscriptionService:
             has_overdue_deposit=subscription.has_overdue_deposit,
             status=subscription.status.value,
             created_at=subscription.created_at.isoformat(),
+            accumulated_cents=subscription.total_deposited_cents,
         )
 
     # ------------------------------------------------------------------

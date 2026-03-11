@@ -29,6 +29,9 @@ from app.application.dtos.finance import ApproveWithdrawalInput
 from app.application.dtos.invitation import InviteUserInput
 from app.application.dtos.plan import CreatePlanInput, UpdatePlanInput
 from app.application.services.deposit_service import CreateDepositService
+from app.application.services.installment_payment_service import (
+    InstallmentPaymentService,
+)
 from app.application.services.invitation_service import InvitationService
 from app.application.services.plan_service import PlanService
 from app.application.services.withdrawal_service import WithdrawalService
@@ -43,6 +46,9 @@ from app.domain.exceptions import (
     TransactionNotFoundError,
 )
 from app.infrastructure.db.repositories.audit_log_repository import AuditLogRepository
+from app.infrastructure.db.repositories.installment_payment_repository import (
+    InstallmentPaymentRepository,
+)
 from app.infrastructure.db.repositories.user_repository import UserRepository
 from app.infrastructure.db.repositories.transaction_repository import TransactionRepository
 from app.infrastructure.email.exceptions import EmailError
@@ -380,6 +386,49 @@ async def reject_withdrawal(
 
 
 @router.post(
+    "/installment-payments/{payment_id}/confirm",
+    status_code=status.HTTP_200_OK,
+    summary="Manually confirm an installment payment (testing)",
+)
+async def admin_confirm_installment_payment(
+    payment_id: str,
+    session: DbSession,
+    current_admin: CurrentAdmin,
+) -> dict:
+    """Manually confirm an installment payment.
+
+    Admin-only endpoint for testing purposes. Simulates a successful
+    Pix confirmation without going through the payment gateway.
+    """
+    from app.domain.exceptions import InvalidPaymentError, PaymentNotFoundError
+
+    service = InstallmentPaymentService(session)
+
+    try:
+        pix_tx_id = f"admin-manual-{payment_id[:8]}"
+        result = await service.confirm_payment(
+            payment_id=UUID(payment_id),
+            pix_transaction_id=pix_tx_id,
+        )
+        return {
+            "status": "confirmed",
+            "payment_id": str(result.id),
+            "total_amount_cents": result.total_amount_cents,
+            "items_count": len(result.items),
+        }
+    except PaymentNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Payment {payment_id} not found",
+        )
+    except InvalidPaymentError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=e.message,
+        )
+
+
+@router.post(
     "/webhooks/pix",
     status_code=status.HTTP_200_OK,
     summary="Pix payment webhook",
@@ -390,32 +439,57 @@ async def pix_webhook(
 ) -> dict:
     """Handle Pix payment webhook from gateway.
 
-    Reconciles incoming payments with pending transactions.
+    Reconciles incoming payments with pending transactions
+    and installment payments.
     """
-    service = CreateDepositService(session)
     transaction_repo = TransactionRepository(session)
+    installment_payment_repo = InstallmentPaymentRepository(session)
 
-    # Find pending transaction by Pix key
-    # In production, this would use the pix_transaction_id mapping
+    # 1. Try legacy transaction reconciliation
     transaction = await transaction_repo.get_by_pix_transaction_id(payload.pix_id)
 
-    if not transaction:
-        # Log unknown payment for manual reconciliation
-        return {"status": "unknown_transaction", "pix_id": payload.pix_id}
+    if transaction:
+        if payload.status == "confirmed":
+            service = CreateDepositService(session)
+            await service.confirm_deposit(
+                transaction_id=transaction.id,
+                pix_transaction_id=payload.pix_id,
+            )
+            return {"status": "confirmed", "transaction_id": str(transaction.id)}
+        elif payload.status == "failed":
+            transaction.fail()
+            await transaction_repo.save(transaction)
+            return {"status": "failed", "transaction_id": str(transaction.id)}
+        return {"status": "ignored", "pix_status": payload.status}
 
-    if payload.status == "confirmed":
-        await service.confirm_deposit(
-            transaction_id=transaction.id,
-            pix_transaction_id=payload.pix_id,
-        )
-        return {"status": "confirmed", "transaction_id": str(transaction.id)}
+    # 2. Try installment payment reconciliation
+    installment_payment = await installment_payment_repo.get_by_pix_transaction_id(
+        payload.pix_id
+    )
 
-    elif payload.status == "failed":
-        transaction.fail()
-        await transaction_repo.save(transaction)
-        return {"status": "failed", "transaction_id": str(transaction.id)}
+    if installment_payment:
+        if payload.status == "confirmed":
+            service = InstallmentPaymentService(session)
+            await service.confirm_payment(
+                payment_id=installment_payment.id,
+                pix_transaction_id=payload.pix_id,
+            )
+            return {
+                "status": "confirmed",
+                "installment_payment_id": str(installment_payment.id),
+            }
+        elif payload.status == "failed":
+            installment_payment.fail()
+            await installment_payment_repo.save(installment_payment)
+            await session.commit()
+            return {
+                "status": "failed",
+                "installment_payment_id": str(installment_payment.id),
+            }
+        return {"status": "ignored", "pix_status": payload.status}
 
-    return {"status": "ignored", "pix_status": payload.status}
+    # 3. Unknown payment
+    return {"status": "unknown_transaction", "pix_id": payload.pix_id}
 
 
 @router.get(

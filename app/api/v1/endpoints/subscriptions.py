@@ -71,6 +71,7 @@ async def list_subscriptions(
                 has_overdue_deposit=r.has_overdue_deposit,
                 status=r.status,
                 created_at=r.created_at,
+                accumulated_cents=r.accumulated_cents,
             )
             for r in results
         ],
@@ -229,6 +230,7 @@ async def create_subscription(
             has_overdue_deposit=result.has_overdue_deposit,
             status=result.status,
             created_at=result.created_at,
+            accumulated_cents=result.accumulated_cents,
         )
     except PlanNotFoundError as e:
         raise HTTPException(
@@ -291,6 +293,7 @@ async def update_deposit_day(
             has_overdue_deposit=result.has_overdue_deposit,
             status=result.status,
             created_at=result.created_at,
+            accumulated_cents=result.accumulated_cents,
         )
     except SubscriptionNotFoundError as e:
         raise HTTPException(

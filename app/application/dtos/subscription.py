@@ -68,6 +68,7 @@ class SubscriptionResult:
     has_overdue_deposit: bool
     status: str
     created_at: str  # ISO format string
+    accumulated_cents: int
 
 
 @dataclass

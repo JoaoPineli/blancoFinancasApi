@@ -1,7 +1,7 @@
 """Tests for domain entities."""
 
 import pytest
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -459,3 +459,59 @@ class TestTransaction:
         assert transaction.transaction_type == TransactionType.WITHDRAWAL
         assert transaction.is_pending()
         assert transaction.bank_account == "0001 12345-6"
+
+
+class TestInstallmentPayment:
+    """Test InstallmentPayment entity — is_stale logic."""
+
+    def _make_payment(self, created_at=None, expiration_minutes=30):
+        from app.domain.entities.installment_payment import InstallmentPayment, PaymentStatus, InstallmentPaymentItem
+        pid = uuid4()
+        return InstallmentPayment(
+            id=pid,
+            user_id=uuid4(),
+            status=PaymentStatus.PENDING,
+            total_amount_cents=50_000,
+            pix_qr_code_data="qr",
+            pix_transaction_id=None,
+            expiration_minutes=expiration_minutes,
+            items=[
+                InstallmentPaymentItem(
+                    id=uuid4(), payment_id=pid,
+                    subscription_id=uuid4(), subscription_name="Sub",
+                    plan_title="Plan", amount_cents=50_000,
+                    installment_number=1,
+                )
+            ],
+            created_at=created_at or datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+
+    def test_is_stale_fresh_payment(self):
+        """Payment created just now is not stale."""
+        p = self._make_payment()
+        assert p.is_stale() is False
+
+    def test_is_stale_after_expiration(self):
+        """Payment older than expiration_minutes is stale."""
+        p = self._make_payment(created_at=datetime.utcnow() - timedelta(minutes=31))
+        assert p.is_stale() is True
+
+    def test_is_stale_exact_boundary(self):
+        """Payment at exactly expiration_minutes boundary is stale."""
+        from datetime import timezone
+        now = datetime.now(timezone.utc)
+        p = self._make_payment(created_at=now - timedelta(minutes=30))
+        assert p.is_stale(now=now) is True
+
+    def test_is_stale_confirmed_not_stale(self):
+        """Confirmed payment is never stale."""
+        p = self._make_payment(created_at=datetime.utcnow() - timedelta(hours=2))
+        p.confirm("pix_tx_1")
+        assert p.is_stale() is False
+
+    def test_is_stale_expired_not_stale(self):
+        """Already-expired payment is not stale (only pending can be stale)."""
+        p = self._make_payment(created_at=datetime.utcnow() - timedelta(hours=2))
+        p.expire()
+        assert p.is_stale() is False

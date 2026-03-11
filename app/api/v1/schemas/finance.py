@@ -90,3 +90,154 @@ class PixWebhookPayload(BaseModel):
     payer_cpf: Optional[str] = Field(None, description="Payer CPF")
     payer_name: Optional[str] = Field(None, description="Payer name")
     timestamp: str = Field(..., description="Event timestamp ISO format")
+
+
+# ------------------------------------------------------------------
+# Installment Payment Schemas
+# ------------------------------------------------------------------
+
+
+class PayableInstallmentResponse(BaseModel):
+    """Response schema for a single payable installment."""
+
+    subscription_id: str = Field(..., description="Subscription UUID")
+    subscription_name: str = Field(..., description="Subscription name")
+    plan_title: str = Field(..., description="Plan title")
+    installment_number: int = Field(..., description="Current installment number")
+    total_installments: int = Field(..., description="Total installments in plan")
+    amount_cents: int = Field(..., description="Installment amount in cents")
+    due_date: str = Field(..., description="Due date (ISO format)")
+    is_overdue: bool = Field(..., description="Whether the installment is overdue")
+    status: str = Field(..., description="Status: overdue, due_today, upcoming")
+    pending_payment_id: Optional[str] = Field(
+        None, description="UUID of existing pending payment, if any"
+    )
+
+
+class PayableInstallmentsListResponse(BaseModel):
+    """Response schema for list of payable installments."""
+
+    installments: list[PayableInstallmentResponse] = Field(
+        ..., description="List of payable installments"
+    )
+    total: int = Field(..., description="Total count")
+
+
+class CreateInstallmentPaymentRequest(BaseModel):
+    """Request schema for creating a grouped installment payment."""
+
+    subscription_ids: list[str] = Field(
+        ..., min_length=1, description="UUIDs of subscriptions to pay"
+    )
+
+
+class InstallmentPaymentItemResponse(BaseModel):
+    """Response schema for a single item within an installment payment."""
+
+    id: str = Field(..., description="Item UUID")
+    subscription_id: str = Field(..., description="Subscription UUID")
+    subscription_name: str = Field(..., description="Subscription name snapshot")
+    plan_title: str = Field(..., description="Plan title snapshot")
+    amount_cents: int = Field(..., description="Item amount in cents")
+    installment_number: int = Field(..., description="Installment number")
+
+
+class InstallmentPaymentResponse(BaseModel):
+    """Response schema for a grouped installment payment."""
+
+    id: str = Field(..., description="Payment UUID")
+    user_id: str = Field(..., description="User UUID")
+    status: str = Field(..., description="Payment status")
+    total_amount_cents: int = Field(..., description="Total amount in cents")
+    pix_qr_code_data: Optional[str] = Field(None, description="Pix QR Code payload")
+    pix_transaction_id: Optional[str] = Field(None, description="Pix transaction ID")
+    expiration_minutes: int = Field(..., description="QR Code expiration in minutes")
+    items: list[InstallmentPaymentItemResponse] = Field(
+        ..., description="Payment items"
+    )
+    created_at: str = Field(..., description="Creation date (ISO format)")
+    updated_at: str = Field(..., description="Last update date (ISO format)")
+    confirmed_at: Optional[str] = Field(None, description="Confirmation date (ISO format)")
+
+
+# ------------------------------------------------------------------
+# Withdrawal / Plan Closure Schemas
+# ------------------------------------------------------------------
+
+
+class WithdrawableSubscriptionResponse(BaseModel):
+    """Response schema for a subscription eligible for withdrawal."""
+
+    subscription_id: str = Field(..., description="Subscription UUID")
+    subscription_name: str = Field(..., description="Subscription name")
+    plan_title: str = Field(..., description="Plan title")
+    status: str = Field(..., description="Subscription status")
+    is_early_termination: bool = Field(
+        ..., description="Whether this is an early termination"
+    )
+    withdrawable_amount_cents: int = Field(
+        ..., description="Amount available for withdrawal in cents"
+    )
+    deposits_paid: int = Field(..., description="Number of deposits paid")
+    deposit_count: int = Field(..., description="Total number of deposits")
+    created_at: str = Field(..., description="Subscription creation date (ISO format)")
+
+
+class WithdrawableSubscriptionsListResponse(BaseModel):
+    """Response schema for list of withdrawable subscriptions."""
+
+    subscriptions: list[WithdrawableSubscriptionResponse] = Field(
+        ..., description="List of withdrawable subscriptions"
+    )
+    total: int = Field(..., description="Total count")
+
+
+class RequestPlanWithdrawalRequest(BaseModel):
+    """Request schema for requesting a plan withdrawal."""
+
+    subscription_id: str = Field(..., description="Subscription UUID")
+
+
+class PlanWithdrawalResponse(BaseModel):
+    """Response schema for a plan withdrawal request."""
+
+    subscription_id: str = Field(..., description="Subscription UUID")
+    subscription_name: str = Field(..., description="Subscription name")
+    plan_title: str = Field(..., description="Plan title")
+    status: str = Field(..., description="Withdrawal status")
+    amount_cents: int = Field(..., description="Withdrawal amount in cents")
+    is_early_termination: bool = Field(
+        ..., description="Whether this was an early termination"
+    )
+    created_at: str = Field(..., description="Date (ISO format)")
+
+
+# ------------------------------------------------------------------
+# History Schemas
+# ------------------------------------------------------------------
+
+
+class HistoryEventResponse(BaseModel):
+    """Response schema for a single event in financial history."""
+
+    id: str = Field(..., description="Event UUID")
+    event_type: str = Field(
+        ..., description="Event type: installment_payment or plan_withdrawal"
+    )
+    status: str = Field(..., description="Event status")
+    amount_cents: int = Field(..., description="Amount in cents")
+    description: str = Field(..., description="Human-readable description")
+    plan_titles: list[str] = Field(
+        default_factory=list, description="Associated plan titles"
+    )
+    created_at: str = Field(..., description="Date (ISO format)")
+    confirmed_at: Optional[str] = Field(None, description="Confirmation date (ISO format)")
+
+
+class HistoryListResponse(BaseModel):
+    """Response schema for financial history."""
+
+    events: list[HistoryEventResponse] = Field(
+        ..., description="List of history events"
+    )
+    total: int = Field(..., description="Total count")

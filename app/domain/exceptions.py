@@ -145,3 +145,24 @@ class UserAlreadyExistsError(DomainError):
 
     def __init__(self, message: str = "User already exists") -> None:
         super().__init__(message)
+
+
+class PaymentNotFoundError(DomainError):
+    """Raised when an installment payment is not found."""
+
+    def __init__(self, payment_id: str) -> None:
+        super().__init__(f"Payment not found: {payment_id}")
+
+
+class InvalidPaymentError(DomainError):
+    """Raised when a payment request is invalid."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class DuplicatePaymentError(DomainError):
+    """Raised when a duplicate payment is detected."""
+
+    def __init__(self, message: str = "Duplicate payment detected") -> None:
+        super().__init__(message)

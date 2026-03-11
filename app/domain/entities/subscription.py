@@ -62,6 +62,9 @@ class UserPlanSubscription:
     # Pre-calculated total cost (fees + taxes)
     total_cost_cents: int
 
+    # Payment tracking
+    deposits_paid: int = 0
+
     # Deposit due-date fields
     deposit_day_of_month: int = 1
     next_due_date: date = field(default_factory=date.today)
@@ -157,6 +160,7 @@ class UserPlanSubscription:
             insurance_percent=insurance_percent,
             guarantee_fund_percent=guarantee_fund_percent,
             total_cost_cents=total_cost_cents,
+            deposits_paid=0,
             deposit_day_of_month=deposit_day_of_month,
             next_due_date=next_due,
             has_overdue_deposit=False,
@@ -222,6 +226,47 @@ class UserPlanSubscription:
             self.deposit_day_of_month, self.next_due_date
         )
         self.updated_at = datetime.utcnow()
+
+    def record_deposit_paid(self, today_local: date) -> None:
+        """Record a successful deposit payment for this subscription.
+
+        Increments deposits_paid, clears overdue flag, advances due date.
+        If all deposits are paid, marks subscription as completed.
+
+        Args:
+            today_local: Current calendar date in user timezone.
+
+        Raises:
+            ValueError: If subscription is not active or all deposits are already paid.
+        """
+        if self.status != SubscriptionStatus.ACTIVE:
+            raise ValueError(
+                f"Cannot record payment for subscription in status {self.status.value}"
+            )
+        if self.deposits_paid >= self.deposit_count:
+            raise ValueError("All deposits already paid for this subscription")
+
+        self.deposits_paid += 1
+        self.clear_overdue_and_advance(today_local)
+
+        if self.deposits_paid >= self.deposit_count:
+            self.status = SubscriptionStatus.COMPLETED
+            self.updated_at = datetime.utcnow()
+
+    @property
+    def current_installment_number(self) -> int:
+        """The installment number that should be paid next (1-based)."""
+        return self.deposits_paid + 1
+
+    @property
+    def is_fully_paid(self) -> bool:
+        """Whether all installments have been paid."""
+        return self.deposits_paid >= self.deposit_count
+
+    @property
+    def total_deposited_cents(self) -> int:
+        """Total amount deposited based on payments recorded."""
+        return self.deposits_paid * self.monthly_amount_cents
 
     def cancel(self) -> None:
         """Cancel the subscription.
