@@ -164,7 +164,150 @@ class TestPoupancaYieldCalculator:
     def test_series_selection_post_2012(self):
         """Test correct series selection for post-2012 dates."""
         from app.domain.entities.yield_data import YieldData, SGSSeries
-        
+
         # Date on or after May 4, 2012
         series = YieldData.get_series_for_date(date(2012, 5, 4))
         assert series == SGSSeries.POST_2012
+
+    def test_multi_month_compound_yield(self):
+        """Test compound yield over multiple months."""
+        yield_data = [
+            YieldData.create(
+                series_id=SGSSeries.POST_2012,
+                reference_date=date(2024, 1, 15),
+                rate=Decimal("0.005"),  # 0.5%
+            ),
+            YieldData.create(
+                series_id=SGSSeries.POST_2012,
+                reference_date=date(2024, 2, 15),
+                rate=Decimal("0.005"),  # 0.5%
+            ),
+        ]
+
+        calculator = PoupancaYieldCalculator(yield_data)
+        principal = Money("10000.00")
+
+        result = calculator.calculate_yield(
+            principal=principal,
+            deposit_date=date(2024, 1, 15),
+            calculation_date=date(2024, 3, 15),
+        )
+
+        # effective_rate = (1.005)^2 - 1 = 0.010025
+        # yield = R$10,000 * 0.010025 = R$100.25 → 10025 cents
+        assert result.yield_amount.cents == 10025
+        assert result.series_id == SGSSeries.POST_2012
+
+    def test_yield_delta_idempotency(self):
+        """Test that delta calculation correctly produces zero on repeated dates."""
+        yield_data = [
+            YieldData.create(
+                series_id=SGSSeries.POST_2012,
+                reference_date=date(2024, 1, 15),
+                rate=Decimal("0.005"),
+            ),
+        ]
+        calculator = PoupancaYieldCalculator(yield_data)
+        principal = Money("10000.00")
+
+        # First call: calculate yield through Feb 15
+        result_total = calculator.calculate_yield(
+            principal=principal,
+            deposit_date=date(2024, 1, 15),
+            calculation_date=date(2024, 2, 15),
+        )
+        # Second call: previously credited = same date → delta = 0
+        result_prev = calculator.calculate_yield(
+            principal=principal,
+            deposit_date=date(2024, 1, 15),
+            calculation_date=date(2024, 2, 15),
+        )
+        delta = result_total.yield_amount.cents - result_prev.yield_amount.cents
+        assert delta == 0
+
+    def test_yield_delta_new_month(self):
+        """Test that delta yields only the increment for the new month."""
+        yield_data = [
+            YieldData.create(
+                series_id=SGSSeries.POST_2012,
+                reference_date=date(2024, 1, 15),
+                rate=Decimal("0.005"),
+            ),
+            YieldData.create(
+                series_id=SGSSeries.POST_2012,
+                reference_date=date(2024, 2, 15),
+                rate=Decimal("0.005"),
+            ),
+        ]
+        calculator = PoupancaYieldCalculator(yield_data)
+        principal = Money("10000.00")
+
+        # Previously credited: 1 month
+        prev_result = calculator.calculate_yield(
+            principal=principal,
+            deposit_date=date(2024, 1, 15),
+            calculation_date=date(2024, 2, 15),
+        )
+        # Total: 2 months
+        total_result = calculator.calculate_yield(
+            principal=principal,
+            deposit_date=date(2024, 1, 15),
+            calculation_date=date(2024, 3, 15),
+        )
+
+        delta = total_result.yield_amount.cents - prev_result.yield_amount.cents
+        # Month 2 yield on growing principal: 10000 * 1.005 * 0.005 = 50.25 → 5025 cents
+        assert delta == 5025
+
+    def test_rounding_explicit_half_up(self):
+        """Test that rounding is ROUND_HALF_UP (never truncated or floored)."""
+        yield_data = [
+            YieldData.create(
+                series_id=SGSSeries.POST_2012,
+                reference_date=date(2024, 1, 15),
+                rate=Decimal("0.00497"),  # 0.497% — yields sub-cent amount
+            ),
+        ]
+        calculator = PoupancaYieldCalculator(yield_data)
+        # R$ 100.00 * 0.00497 = R$ 0.497 → rounds to R$ 0.50 (ROUND_HALF_UP)
+        principal = Money("100.00")
+        result = calculator.calculate_yield(
+            principal=principal,
+            deposit_date=date(2024, 1, 15),
+            calculation_date=date(2024, 2, 15),
+        )
+        assert result.yield_amount.cents == 50  # R$ 0.50
+
+    def test_series_boundary_cutoff_date(self):
+        """Test series selection exactly on the cutoff date (May 4, 2012)."""
+        assert YieldData.get_series_for_date(date(2012, 5, 3)) == SGSSeries.PRE_2012
+        assert YieldData.get_series_for_date(date(2012, 5, 4)) == SGSSeries.POST_2012
+        assert YieldData.get_series_for_date(date(2012, 5, 5)) == SGSSeries.POST_2012
+
+    def test_missing_yield_data_raises_error(self):
+        """Test that missing BCB data raises YieldCalculationError (fail loud)."""
+        from app.domain.exceptions import YieldCalculationError
+
+        # No yield data at all — should raise when a complete month is present
+        calculator = PoupancaYieldCalculator([])
+        principal = Money("1000.00")
+
+        with pytest.raises(YieldCalculationError):
+            calculator.calculate_yield(
+                principal=principal,
+                deposit_date=date(2024, 1, 15),
+                calculation_date=date(2024, 2, 15),  # 1 complete month
+            )
+
+    def test_zero_yield_before_first_anniversary(self):
+        """Yield is zero if calculation_date has not reached the first anniversary."""
+        calculator = PoupancaYieldCalculator([])
+        principal = Money("5000.00")
+
+        result = calculator.calculate_yield(
+            principal=principal,
+            deposit_date=date(2024, 1, 15),
+            calculation_date=date(2024, 2, 14),  # one day before anniversary
+        )
+        assert result.yield_amount.is_zero()
+        assert result.days_accrued == 30

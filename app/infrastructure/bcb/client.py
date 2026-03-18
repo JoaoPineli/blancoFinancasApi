@@ -109,6 +109,10 @@ class BcbClient:
         except httpx.TimeoutException:
             raise BCBUnavailableError("BCB API request timed out")
         except httpx.HTTPStatusError as e:
+            # 404 means no data published for the requested date range (normal for
+            # future dates or intervals without a rate announcement).  Treat as empty.
+            if e.response.status_code == 404:
+                return []
             raise BCBUnavailableError(f"BCB API returned error: {e.response.status_code}")
         except httpx.RequestError as e:
             raise BCBUnavailableError(f"BCB API request failed: {str(e)}")

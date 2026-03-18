@@ -13,6 +13,8 @@ from app.api.v1.schemas.user import UserListResponse, UserResponse, UserStatusRe
 from app.api.v1.schemas.finance import (
     ApproveWithdrawalRequest,
     PixWebhookPayload,
+    ProcessYieldsRequest,
+    ProcessYieldsResponse,
     RejectWithdrawalRequest,
     TransactionListResponse,
     TransactionResponse,
@@ -32,6 +34,7 @@ from app.application.services.installment_payment_service import (
 )
 from app.application.services.plan_service import PlanService
 from app.application.services.withdrawal_service import WithdrawalService
+from app.application.services.yield_service import YieldService
 from app.domain.entities.audit_log import AuditAction, AuditLog
 from app.domain.entities.user import UserStatus
 from app.domain.exceptions import (
@@ -41,6 +44,7 @@ from app.domain.exceptions import (
     InvalidWithdrawalError,
     TransactionNotFoundError,
 )
+from app.infrastructure.bcb.exceptions import BCBUnavailableError
 from app.infrastructure.db.repositories.audit_log_repository import AuditLogRepository
 from app.infrastructure.db.repositories.installment_payment_repository import (
     InstallmentPaymentRepository,
@@ -726,3 +730,85 @@ async def update_plan(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
+
+
+# ------------------------------------------------------------------
+# Yield processing
+# ------------------------------------------------------------------
+
+
+@router.post(
+    "/yield/process",
+    response_model=ProcessYieldsResponse,
+    summary="Process poupança yields for all principal deposits",
+)
+async def process_yields(
+    session: DbSession,
+    current_admin: CurrentAdmin,
+    request: ProcessYieldsRequest = ProcessYieldsRequest(),
+) -> ProcessYieldsResponse:
+    """Trigger poupança yield calculation and crediting for all deposits.
+
+    Idempotent: running twice on the same date credits zero additional yield.
+    Intended to be called by an external cron job (e.g., daily at midnight BRT).
+
+    If target_date is omitted, the server uses the current UTC date.
+
+    Workflow:
+      1. Finds all PrincipalDeposit records not yet processed through target_date.
+      2. Fetches required BCB SGS rate snapshots (fails loud if BCB unreachable).
+      3. For each deposit: credits delta yield = yield(deposited_at→target_date)
+         minus yield(deposited_at→last_yield_run_date). Commits per-deposit.
+      4. Creates YIELD_CREDITED audit log per credited deposit.
+      5. Returns summary.
+    """
+    import datetime as _dt
+    from datetime import date as _date, timezone as _tz
+
+    if request.target_date:
+        try:
+            calculation_date = _date.fromisoformat(request.target_date)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid target_date format: {request.target_date!r}. Expected YYYY-MM-DD.",
+            )
+    else:
+        calculation_date = _dt.datetime.now(_tz.utc).date()
+
+    service = YieldService(session)
+
+    try:
+        result = await service.process_all_yields(calculation_date=calculation_date)
+    except BCBUnavailableError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"BCB API unavailable: {e.message}",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Yield processing failed: {str(e)}",
+        )
+
+    # Audit the batch run.
+    audit_repo = AuditLogRepository(session)
+    batch_audit = AuditLog.create(
+        action=AuditAction.YIELD_BATCH_PROCESSED,
+        actor_id=current_admin.id,
+        details={
+            "calculation_date": calculation_date.isoformat(),
+            "deposits_evaluated": result.deposits_evaluated,
+            "deposits_credited": result.deposits_credited,
+            "total_yield_cents": result.total_yield_cents,
+        },
+    )
+    await audit_repo.save(batch_audit)
+    await session.commit()
+
+    return ProcessYieldsResponse(
+        calculation_date=calculation_date.isoformat(),
+        deposits_evaluated=result.deposits_evaluated,
+        deposits_credited=result.deposits_credited,
+        total_yield_cents=result.total_yield_cents,
+    )

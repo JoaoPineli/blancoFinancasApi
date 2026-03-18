@@ -160,6 +160,11 @@ class TransactionModel(Base):
     contract_id: Mapped[Optional[UUID]] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("contracts.id"), nullable=True, index=True
     )
+    subscription_id: Mapped[Optional[UUID]] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("user_plan_subscriptions.id"),
+        nullable=True,
+    )
     transaction_type: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
     amount_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -180,6 +185,7 @@ class TransactionModel(Base):
     # Indexes
     __table_args__ = (
         Index("ix_transactions_user_type_status", "user_id", "transaction_type", "status"),
+        Index("ix_transactions_subscription_id", "subscription_id"),
     )
 
 
@@ -280,6 +286,45 @@ class YieldDataModel(Base):
     __table_args__ = (
         UniqueConstraint("series_id", "reference_date", name="uq_yield_data_series_date"),
         Index("ix_yield_data_series_date", "series_id", "reference_date"),
+    )
+
+
+class PrincipalDepositModel(Base):
+    """SQLAlchemy model for per-installment principal deposit tracking.
+
+    Each confirmed InstallmentPaymentItem produces one PrincipalDeposit.
+    deposited_at is the anchor date for poupança anniversary calculation.
+    last_yield_run_date enables idempotent yield crediting.
+    """
+
+    __tablename__ = "principal_deposits"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    subscription_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("user_plan_subscriptions.id"),
+        nullable=False,
+    )
+    installment_payment_item_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("installment_payment_items.id"),
+        nullable=False,
+        unique=True,  # one deposit per payment item
+    )
+    installment_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    principal_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    deposited_at: Mapped[date] = mapped_column(Date, nullable=False)
+    last_yield_run_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    __table_args__ = (
+        Index("ix_principal_deposits_user_id", "user_id"),
+        Index("ix_principal_deposits_subscription_id", "subscription_id"),
+        Index("ix_principal_deposits_deposited_at", "deposited_at"),
+        Index("ix_principal_deposits_last_yield_run", "last_yield_run_date"),
     )
 
 

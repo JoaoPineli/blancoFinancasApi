@@ -3,7 +3,7 @@
 from typing import List, Optional
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.entities.transaction import (
@@ -91,6 +91,16 @@ class TransactionRepository:
         models = result.scalars().all()
         return [self._to_entity(model) for model in models]
 
+    async def get_yield_sum_by_subscription(self, subscription_id: UUID) -> int:
+        """Return total confirmed yield credited for a subscription (cents)."""
+        result = await self._session.execute(
+            select(func.coalesce(func.sum(TransactionModel.amount_cents), 0))
+            .where(TransactionModel.subscription_id == subscription_id)
+            .where(TransactionModel.transaction_type == TransactionType.YIELD.value)
+            .where(TransactionModel.status == TransactionStatus.CONFIRMED.value)
+        )
+        return int(result.scalar())
+
     async def save(self, transaction: Transaction) -> Transaction:
         """Save transaction (create or update)."""
         model = self._to_model(transaction)
@@ -115,6 +125,7 @@ class TransactionRepository:
             id=model.id,
             user_id=model.user_id,
             contract_id=model.contract_id,
+            subscription_id=model.subscription_id,
             transaction_type=TransactionType(model.transaction_type),
             status=TransactionStatus(model.status),
             amount_cents=model.amount_cents,
@@ -137,6 +148,7 @@ class TransactionRepository:
             id=entity.id,
             user_id=entity.user_id,
             contract_id=entity.contract_id,
+            subscription_id=entity.subscription_id,
             transaction_type=entity.transaction_type.value,
             status=entity.status.value,
             amount_cents=entity.amount_cents,

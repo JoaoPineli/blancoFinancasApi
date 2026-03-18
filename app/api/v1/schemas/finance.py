@@ -241,3 +241,31 @@ class HistoryListResponse(BaseModel):
         ..., description="List of history events"
     )
     total: int = Field(..., description="Total count")
+
+
+# ------------------------------------------------------------------
+# Yield Processing Schemas (admin)
+# ------------------------------------------------------------------
+
+
+class ProcessYieldsRequest(BaseModel):
+    """Optional request body for the yield processing admin endpoint.
+
+    If target_date is omitted, the server uses the current date (UTC).
+    """
+
+    target_date: Optional[str] = Field(
+        None,
+        description="ISO date (YYYY-MM-DD) to use as calculation reference. "
+        "Defaults to today (UTC) if not provided.",
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+    )
+
+
+class ProcessYieldsResponse(BaseModel):
+    """Response schema for the yield processing admin endpoint."""
+
+    calculation_date: str = Field(..., description="Date used as yield reference (ISO)")
+    deposits_evaluated: int = Field(..., description="Total deposits examined")
+    deposits_credited: int = Field(..., description="Deposits that received new yield")
+    total_yield_cents: int = Field(..., description="Total yield credited in cents")

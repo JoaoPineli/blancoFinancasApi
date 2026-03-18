@@ -72,6 +72,8 @@ async def list_subscriptions(
                 status=r.status,
                 created_at=r.created_at,
                 accumulated_cents=r.accumulated_cents,
+                deposits_paid=r.deposits_paid,
+                yield_cents=r.yield_cents,
             )
             for r in results
         ],
@@ -231,6 +233,8 @@ async def create_subscription(
             status=result.status,
             created_at=result.created_at,
             accumulated_cents=result.accumulated_cents,
+            deposits_paid=result.deposits_paid,
+            yield_cents=result.yield_cents,
         )
     except PlanNotFoundError as e:
         raise HTTPException(
@@ -294,6 +298,8 @@ async def update_deposit_day(
             status=result.status,
             created_at=result.created_at,
             accumulated_cents=result.accumulated_cents,
+            deposits_paid=result.deposits_paid,
+            yield_cents=result.yield_cents,
         )
     except SubscriptionNotFoundError as e:
         raise HTTPException(

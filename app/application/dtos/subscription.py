@@ -69,6 +69,8 @@ class SubscriptionResult:
     status: str
     created_at: str  # ISO format string
     accumulated_cents: int
+    deposits_paid: int
+    yield_cents: int
 
 
 @dataclass

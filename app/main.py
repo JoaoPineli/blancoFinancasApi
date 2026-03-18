@@ -8,14 +8,17 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_router
 from app.infrastructure.config import settings
+from app.infrastructure.scheduler.yield_scheduler import YieldScheduler
+
+_yield_scheduler = YieldScheduler()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan events."""
-    # Startup
+    await _yield_scheduler.start()
     yield
-    # Shutdown
+    await _yield_scheduler.stop()
 
 
 app = FastAPI(

@@ -36,6 +36,7 @@ from app.infrastructure.db.repositories.plan_repository import PlanRepository
 from app.infrastructure.db.repositories.subscription_repository import (
     SubscriptionRepository,
 )
+from app.infrastructure.db.repositories.transaction_repository import TransactionRepository
 
 # Default timezone when user.timezone is absent
 _DEFAULT_TZ = zoneinfo.ZoneInfo("America/Sao_Paulo")
@@ -59,6 +60,7 @@ class SubscriptionService:
         self._subscription_repo = SubscriptionRepository(session)
         self._plan_repo = PlanRepository(session)
         self._audit_repo = AuditLogRepository(session)
+        self._transaction_repo = TransactionRepository(session)
         self._recommendation_service = PlanRecommendationService()
 
     async def list_user_subscriptions(
@@ -76,10 +78,10 @@ class SubscriptionService:
 
         results = []
         for sub in subscriptions:
-            # Fetch plan title for display
             plan = await self._plan_repo.get_by_id(sub.plan_id, include_deleted=True)
             plan_title = plan.title if plan else "Plano removido"
-            results.append(self._to_result(sub, plan_title))
+            yield_cents = await self._transaction_repo.get_yield_sum_by_subscription(sub.id)
+            results.append(self._to_result(sub, plan_title, yield_cents))
 
         return results
 
@@ -270,7 +272,7 @@ class SubscriptionService:
         return self._to_result(saved, plan.title)
 
     def _to_result(
-        self, subscription: UserPlanSubscription, plan_title: str
+        self, subscription: UserPlanSubscription, plan_title: str, yield_cents: int = 0
     ) -> SubscriptionResult:
         """Convert subscription entity to result DTO.
 
@@ -300,6 +302,8 @@ class SubscriptionService:
             status=subscription.status.value,
             created_at=subscription.created_at.isoformat(),
             accumulated_cents=subscription.total_deposited_cents,
+            deposits_paid=subscription.deposits_paid,
+            yield_cents=yield_cents,
         )
 
     # ------------------------------------------------------------------
@@ -344,9 +348,10 @@ class SubscriptionService:
 
         plan = await self._plan_repo.get_by_id(saved.plan_id, include_deleted=True)
         plan_title = plan.title if plan else "Plano removido"
+        yield_cents = await self._transaction_repo.get_yield_sum_by_subscription(saved.id)
 
         await self._session.commit()
-        return self._to_result(saved, plan_title)
+        return self._to_result(saved, plan_title, yield_cents)
 
     # ------------------------------------------------------------------
     # Dashboard lazy update
@@ -437,9 +442,10 @@ class SubscriptionService:
 
         plan = await self._plan_repo.get_by_id(saved.plan_id, include_deleted=True)
         plan_title = plan.title if plan else "Plano removido"
+        yield_cents = await self._transaction_repo.get_yield_sum_by_subscription(saved.id)
 
         await self._session.commit()
-        return self._to_result(saved, plan_title)
+        return self._to_result(saved, plan_title, yield_cents)
 
     # ------------------------------------------------------------------
     # Helpers

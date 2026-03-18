@@ -95,6 +95,8 @@ class SubscriptionResponse(BaseModel):
     status: str = Field(..., description="Subscription status")
     created_at: str = Field(..., description="Creation date (ISO format)")
     accumulated_cents: int = Field(..., description="Total amount deposited so far in cents")
+    deposits_paid: int = Field(..., description="Number of installments paid so far")
+    yield_cents: int = Field(..., description="Total poupança yield credited so far in cents")
 
 
 class SubscriptionListResponse(BaseModel):

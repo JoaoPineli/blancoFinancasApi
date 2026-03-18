@@ -71,11 +71,24 @@ class YieldDataRepository:
         return [self._to_entity(model) for model in models]
 
     async def save(self, yield_data: YieldData) -> YieldData:
-        """Save yield data (create or update)."""
+        """Save yield data — insert only if (series_id, reference_date) not yet stored.
+
+        Idempotent: calling twice for the same data point is a no-op.
+        The merge-by-UUID pattern fails here because each BCB fetch creates a
+        fresh UUID for the same logical record, which would violate the unique
+        constraint on (series_id, reference_date).
+        """
+        existing = await self.get_by_date_and_series(
+            reference_date=yield_data.reference_date,
+            series_id=yield_data.series_id,
+        )
+        if existing:
+            return existing
+
         model = self._to_model(yield_data)
-        merged = await self._session.merge(model)
+        self._session.add(model)
         await self._session.flush()
-        return self._to_entity(merged)
+        return self._to_entity(model)
 
     async def save_batch(self, yield_data_list: List[YieldData]) -> List[YieldData]:
         """Save multiple yield data entries."""

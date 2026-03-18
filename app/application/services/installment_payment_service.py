@@ -43,11 +43,15 @@ from app.domain.exceptions import (
 )
 from app.domain.services.installment_calculator import InstallmentCalculator
 from app.domain.value_objects.money import Money
+from app.domain.entities.principal_deposit import PrincipalDeposit
 from app.infrastructure.db.repositories.audit_log_repository import AuditLogRepository
 from app.infrastructure.db.repositories.installment_payment_repository import (
     InstallmentPaymentRepository,
 )
 from app.infrastructure.db.repositories.plan_repository import PlanRepository
+from app.infrastructure.db.repositories.principal_deposit_repository import (
+    PrincipalDepositRepository,
+)
 from app.infrastructure.db.repositories.subscription_repository import (
     SubscriptionRepository,
 )
@@ -75,6 +79,7 @@ class InstallmentPaymentService:
         self._wallet_repo = WalletRepository(session)
         self._transaction_repo = TransactionRepository(session)
         self._audit_repo = AuditLogRepository(session)
+        self._principal_deposit_repo = PrincipalDepositRepository(session)
         self._pix_gateway = PixGatewayAdapter()
 
     # ------------------------------------------------------------------
@@ -380,6 +385,21 @@ class InstallmentPaymentService:
                 wallet.credit_investment(breakdown.investment_amount)
                 wallet.add_fundo_garantidor(breakdown.fundo_garantidor_amount)
                 await self._wallet_repo.save(wallet)
+
+                # Record principal deposit for poupança yield tracking.
+                # Idempotent: skip if a record already exists for this item
+                # (handles re-delivery of a confirmed webhook).
+                existing = await self._principal_deposit_repo.get_by_item_id(item.id)
+                if not existing and breakdown.investment_amount.cents > 0:
+                    principal_deposit = PrincipalDeposit.create(
+                        user_id=payment.user_id,
+                        subscription_id=item.subscription_id,
+                        installment_payment_item_id=item.id,
+                        installment_number=item.installment_number,
+                        principal_cents=breakdown.investment_amount.cents,
+                        deposited_at=today,
+                    )
+                    await self._principal_deposit_repo.save(principal_deposit)
 
         # Save payment
         saved = await self._payment_repo.save(payment)

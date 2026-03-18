@@ -49,6 +49,7 @@ class Transaction:
     id: UUID
     user_id: UUID
     contract_id: Optional[UUID]
+    subscription_id: Optional[UUID]
     transaction_type: TransactionType
     status: TransactionStatus
     amount_cents: int
@@ -79,6 +80,7 @@ class Transaction:
             id=uuid4(),
             user_id=user_id,
             contract_id=contract_id,
+            subscription_id=None,
             transaction_type=TransactionType.DEPOSIT,
             status=TransactionStatus.PENDING,
             amount_cents=amount_cents,
@@ -106,6 +108,7 @@ class Transaction:
             id=uuid4(),
             user_id=user_id,
             contract_id=None,
+            subscription_id=None,
             transaction_type=TransactionType.WITHDRAWAL,
             status=TransactionStatus.PENDING,
             amount_cents=amount_cents,
@@ -123,9 +126,10 @@ class Transaction:
     def create_yield(
         cls,
         user_id: UUID,
-        contract_id: UUID,
         amount_cents: int,
         description: str,
+        contract_id: Optional[UUID] = None,
+        subscription_id: Optional[UUID] = None,
     ) -> Transaction:
         """Factory method to create a yield transaction."""
         now = datetime.utcnow()
@@ -133,6 +137,7 @@ class Transaction:
             id=uuid4(),
             user_id=user_id,
             contract_id=contract_id,
+            subscription_id=subscription_id,
             transaction_type=TransactionType.YIELD,
             status=TransactionStatus.CONFIRMED,  # Yields are auto-confirmed
             amount_cents=amount_cents,
@@ -161,6 +166,7 @@ class Transaction:
             id=uuid4(),
             user_id=user_id,
             contract_id=contract_id,
+            subscription_id=None,
             transaction_type=TransactionType.FUNDO_GARANTIDOR,
             status=TransactionStatus.CONFIRMED,
             amount_cents=amount_cents,

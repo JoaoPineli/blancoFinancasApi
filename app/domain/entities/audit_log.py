@@ -45,6 +45,9 @@ class AuditAction(Enum):
     # Plan withdrawal actions
     PLAN_WITHDRAWAL_REQUESTED = "plan_withdrawal_requested"
 
+    # Yield batch actions
+    YIELD_BATCH_PROCESSED = "yield_batch_processed"
+
     # Admin actions
     PLAN_CREATED = "plan_created"
     PLAN_UPDATED = "plan_updated"
