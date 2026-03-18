@@ -12,6 +12,7 @@ Covers:
 """
 
 import pytest
+import random
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
@@ -50,15 +51,33 @@ from app.infrastructure.db.repositories.wallet_repository import WalletRepositor
 # ---------------------------------------------------------------------------
 
 
+def _generate_valid_cpf() -> str:
+    """Generate a valid, formatted CPF string for testing."""
+    while True:
+        digits = [random.randint(0, 9) for _ in range(9)]
+        if len(set(digits)) > 1:
+            break
+    s1 = sum(d * w for d, w in zip(digits, range(10, 1, -1)))
+    r1 = s1 % 11
+    d1 = 0 if r1 < 2 else 11 - r1
+    s2 = sum(d * w for d, w in zip(digits, range(11, 2, -1))) + d1 * 2
+    r2 = s2 % 11
+    d2 = 0 if r2 < 2 else 11 - r2
+    full = digits + [d1, d2]
+    return f"{full[0]}{full[1]}{full[2]}.{full[3]}{full[4]}{full[5]}.{full[6]}{full[7]}{full[8]}-{full[9]}{full[10]}"
+
+
 async def _create_user(session, name: str = "Test User") -> User:
-    """Create and persist a test user (invited → active shortcut)."""
+    """Create and persist an active test user."""
+    from app.domain.value_objects.cpf import CPF
     repo = UserRepository(session)
-    user = User.create_invited(
+    user = User.create(
+        cpf=CPF(_generate_valid_cpf()),
         email=Email(f"{uuid4().hex[:8]}@test.com"),
         name=name,
+        password_hash="test_hashed_password",
         role=UserRole.CLIENT,
     )
-    user.status = UserStatus.ACTIVE
     return await repo.save(user)
 
 

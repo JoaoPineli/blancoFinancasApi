@@ -1,4 +1,4 @@
-"""Authentication schemas."""
+"""Authentication and registration schemas."""
 
 from typing import Optional
 
@@ -8,11 +8,12 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 class RegisterRequest(BaseModel):
     """Request schema for user registration."""
 
-    cpf: str = Field(..., min_length=11, max_length=14, description="CPF (with or without formatting)")
-    email: EmailStr = Field(..., description="Email address")
     name: str = Field(..., min_length=2, max_length=255, description="Full name")
+    nickname: Optional[str] = Field(None, max_length=100, description="Optional nickname")
+    email: EmailStr = Field(..., description="Email address")
     password: str = Field(..., min_length=8, max_length=128, description="Password")
-    phone: Optional[str] = Field(None, max_length=20, description="Phone number")
+    cpf: str = Field(..., min_length=11, max_length=14, description="CPF (with or without formatting)")
+    phone: str = Field(..., min_length=10, max_length=20, description="Phone number")
 
     @field_validator("cpf")
     @classmethod
@@ -43,7 +44,26 @@ class RegisterResponse(BaseModel):
     """Response schema for registration."""
 
     id: str = Field(..., description="User UUID")
-    cpf: str = Field(..., description="User CPF")
     email: str = Field(..., description="User email")
     name: str = Field(..., description="User name")
-    message: str = Field(default="Registration successful")
+    message: str = Field(default="Registration successful. Please check your email to confirm your account.")
+
+
+class ActivateAccountRequest(BaseModel):
+    """Request schema for account activation (email confirmation)."""
+
+    token: str = Field(
+        ...,
+        min_length=32,
+        max_length=64,
+        description="Activation token from confirmation email",
+    )
+
+
+class ActivateAccountResponse(BaseModel):
+    """Response schema for account activation."""
+
+    user_id: str = Field(..., description="Activated user UUID")
+    email: str = Field(..., description="User email")
+    name: str = Field(..., description="User name")
+    message: str = Field(default="Account activated successfully")

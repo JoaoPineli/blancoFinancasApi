@@ -15,7 +15,7 @@ from app.domain.value_objects.email import Email
 class UserStatus(Enum):
     """User status enumeration."""
 
-    INVITED = "invited"  # User invited but not yet activated
+    REGISTERED = "registered"  # User registered but email not yet confirmed
     ACTIVE = "active"
     INACTIVE = "inactive"
     DEFAULTING = "defaulting"  # Inadimplente
@@ -79,28 +79,33 @@ class User:
         )
 
     @classmethod
-    def create_invited(
+    def create_registered(
         cls,
+        cpf: CPF,
         email: Email,
         name: str,
+        password_hash: str,
+        phone: str,
+        nickname: Optional[str] = None,
         role: UserRole = UserRole.CLIENT,
         plan_id: Optional[UUID] = None,
     ) -> User:
-        """Factory method to create an invited user (no password, no CPF).
+        """Factory method to create a self-registered user.
 
-        Invited users must complete activation to set password, CPF, phone.
+        Registered users have all data set but must confirm their email
+        before the account becomes active.
         """
         now = datetime.utcnow()
         return cls(
             id=uuid4(),
-            cpf=None,
+            cpf=cpf,
             email=email,
             name=name,
-            password_hash=None,
+            password_hash=password_hash,
             role=role,
-            status=UserStatus.INVITED,
-            phone=None,
-            nickname=None,
+            status=UserStatus.REGISTERED,
+            phone=phone,
+            nickname=nickname,
             plan_id=plan_id,
             created_at=now,
             updated_at=now,
@@ -111,29 +116,17 @@ class User:
         self.status = UserStatus.ACTIVE
         self.updated_at = datetime.utcnow()
 
-    def complete_activation(
-        self,
-        cpf: CPF,
-        password_hash: str,
-        phone: str,
-        nickname: Optional[str] = None,
-    ) -> None:
-        """Complete account activation for invited users.
+    def complete_activation(self) -> None:
+        """Complete account activation by confirming email.
 
-        Sets password, CPF, phone, and optionally nickname.
-        Transitions status from INVITED to ACTIVE.
+        Transitions status from REGISTERED to ACTIVE.
 
         Raises:
-            ValueError: If user is not in INVITED status.
+            ValueError: If user is not in REGISTERED status.
         """
-        if self.status != UserStatus.INVITED:
-            raise ValueError("Only invited users can complete activation")
+        if self.status != UserStatus.REGISTERED:
+            raise ValueError("Only registered users can complete activation")
 
-        self.cpf = cpf
-        self.password_hash = password_hash
-        self.phone = phone
-        if nickname is not None:
-            self.nickname = nickname
         self.status = UserStatus.ACTIVE
         self.updated_at = datetime.utcnow()
 
@@ -170,9 +163,9 @@ class User:
         """Check if user is active."""
         return self.status == UserStatus.ACTIVE
 
-    def is_invited(self) -> bool:
-        """Check if user is in invited status (pending activation)."""
-        return self.status == UserStatus.INVITED
+    def is_registered(self) -> bool:
+        """Check if user is in registered status (pending email confirmation)."""
+        return self.status == UserStatus.REGISTERED
 
     def update_nickname(self, nickname: str) -> None:
         """Update user nickname."""

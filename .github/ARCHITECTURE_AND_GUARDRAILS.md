@@ -280,15 +280,18 @@ Conveniência do desenvolvedor não é argumento.
 
 ---
 
-## 11. Restrições para IA
+## 11. Restrições para Agentes de IA
 
-IA não pode:
+Este documento aplica-se a todos os agentes de IA, incluindo o **Antigravity**.
+Para instruções operacionais detalhadas sobre fluxo de trabalho, stack técnica e localização de arquivos, consulte [`agent-instructions.md`](./agent-instructions.md).
+
+O agente **não pode**:
 
 - Inventar fórmulas financeiras
 - Criar regras implícitas
 - Assumir limites de negócio não documentados
 
-Na dúvida, a IA deve parar e sinalizar a lacuna.
+Na dúvida, o agente **deve parar** e sinalizar a lacuna explicitamente (via `notify_user` no caso do Antigravity) em vez de preencher a lacuna com suposições.
 
 ---
 

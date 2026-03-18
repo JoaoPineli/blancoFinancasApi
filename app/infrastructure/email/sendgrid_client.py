@@ -42,7 +42,6 @@ class SendGridClient(EmailSender):
             api_key: SendGrid API key. If not provided, uses settings.
         """
         self._api_key = api_key or settings.sendgrid_api_key.get_secret_value()
-        print(self._api_key)
         self._client = SendGridAPIClient(api_key=self._api_key)
         self._from_email = settings.sendgrid_from_email
         self._from_name = settings.sendgrid_from_name
@@ -93,14 +92,12 @@ class SendGridClient(EmailSender):
             EmailInvalidApiKeyError: If API key is invalid
             EmailSendFailedError: If sending fails
         """
-        print(1)
         mail = self._build_mail(message)
 
         try:
             response = self._client.send(mail)
         except Exception as e:
             # Handle connection errors
-            print(2)
             raise EmailServiceUnavailableError(
                 f"Failed to connect to SendGrid: {e!s}"
             ) from e

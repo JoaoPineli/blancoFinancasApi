@@ -16,7 +16,7 @@ class AuditAction(Enum):
     USER_CREATED = "user_created"
     USER_UPDATED = "user_updated"
     USER_STATUS_CHANGED = "user_status_changed"
-    USER_INVITED = "user_invited"
+    USER_REGISTERED = "user_registered"
     USER_ACTIVATED = "user_activated"
 
     # Contract actions

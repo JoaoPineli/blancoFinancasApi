@@ -1,9 +1,9 @@
-"""Tests for invitation service token generation."""
+"""Tests for registration service token generation."""
 
 import pytest
 import hashlib
 
-from app.application.services.invitation_service import (
+from app.application.services.registration_service import (
     generate_secure_token,
     hash_token,
 )

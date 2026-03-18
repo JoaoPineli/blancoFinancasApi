@@ -17,7 +17,6 @@ from app.api.v1.schemas.finance import (
     TransactionListResponse,
     TransactionResponse,
 )
-from app.api.v1.schemas.invitation import InviteUserRequest, InviteUserResponse
 from app.api.v1.schemas.plan import (
     CreatePlanRequest,
     PlanListResponse,
@@ -26,13 +25,11 @@ from app.api.v1.schemas.plan import (
     UpdatePlanRequest,
 )
 from app.application.dtos.finance import ApproveWithdrawalInput
-from app.application.dtos.invitation import InviteUserInput
 from app.application.dtos.plan import CreatePlanInput, UpdatePlanInput
 from app.application.services.deposit_service import CreateDepositService
 from app.application.services.installment_payment_service import (
     InstallmentPaymentService,
 )
-from app.application.services.invitation_service import InvitationService
 from app.application.services.plan_service import PlanService
 from app.application.services.withdrawal_service import WithdrawalService
 from app.domain.entities.audit_log import AuditAction, AuditLog
@@ -40,7 +37,6 @@ from app.domain.entities.user import UserStatus
 from app.domain.exceptions import (
     AuthorizationError,
     UserNotFoundError,
-    UserAlreadyExistsError,
     PlanNotFoundError,
     InvalidWithdrawalError,
     TransactionNotFoundError,
@@ -51,72 +47,11 @@ from app.infrastructure.db.repositories.installment_payment_repository import (
 )
 from app.infrastructure.db.repositories.user_repository import UserRepository
 from app.infrastructure.db.repositories.transaction_repository import TransactionRepository
-from app.infrastructure.email.exceptions import EmailError
-from app.infrastructure.email.sendgrid_client import SendGridClient
 from app.infrastructure.exports.excel_generator import ExcelReportGenerator
 
 router = APIRouter()
 
 
-@router.post(
-    "/invite",
-    response_model=InviteUserResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Invite a new user",
-)
-async def invite_user(
-    request: InviteUserRequest,
-    session: DbSession,
-    current_admin: CurrentAdmin,
-) -> InviteUserResponse:
-    """Invite a new user to the platform.
-
-    Creates a user with INVITED status and sends an activation email.
-    The user cannot authenticate until they complete the activation
-    process using the link sent in the email.
-
-    The activation token is NEVER exposed in the API response.
-
-    Admin only endpoint.
-    """
-    email_sender = SendGridClient()
-    service = InvitationService(session, email_sender)
-
-    try:
-        input_data = InviteUserInput(
-            name=request.name,
-            email=request.email,
-            plan_id=request.plan_id,
-        )
-        result = await service.invite_user(input_data, admin_id=current_admin.id)
-
-        return InviteUserResponse(
-            user_id=str(result.user_id),
-            email=result.email,
-            name=result.name,
-        )
-    except UserAlreadyExistsError:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Email already registered",
-        )
-    except PlanNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Plan not found",
-        )
-    except EmailError:
-        # Email delivery failed - invitation is NOT persisted
-        # Generic message to avoid leaking information
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Unable to send invitation email. Please try again later.",
-        )
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
 
 
 @router.get(
@@ -127,7 +62,7 @@ async def invite_user(
 async def list_users(
     session: DbSession,
     current_admin: CurrentAdmin,
-    status_filter: str | None = Query(None, pattern="^(active|inactive|defaulting|invited)$"),
+    status_filter: str | None = Query(None, pattern="^(active|inactive|defaulting|registered)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
 ) -> UserListResponse:

@@ -49,37 +49,43 @@ class TestUser:
         assert user.nickname == "TestNick"
         assert user.plan_id == plan_id
 
-    def test_create_invited_user(self):
-        """Test creating an invited user (no password, no CPF)."""
-        user = User.create_invited(
-            email=Email("invited@example.com"),
-            name="Invited User",
+    def test_create_registered_user(self):
+        """Test creating a registered user (all fields set, REGISTERED status)."""
+        user = User.create_registered(
+            cpf=CPF("529.982.247-25"),
+            email=Email("registered@example.com"),
+            name="Registered User",
+            password_hash="hashed_password",
+            phone="11999999999",
         )
         
-        assert user.status == UserStatus.INVITED
-        assert user.cpf is None
-        assert user.password_hash is None
-        assert user.phone is None
+        assert user.status == UserStatus.REGISTERED
+        assert user.cpf is not None
+        assert user.password_hash == "hashed_password"
+        assert user.phone == "11999999999"
         assert user.role == UserRole.CLIENT
 
-    def test_create_invited_user_with_plan(self):
-        """Test creating an invited user with pre-assigned plan."""
-        from uuid import uuid4
-        plan_id = uuid4()
-        
-        user = User.create_invited(
-            email=Email("invited@example.com"),
-            name="Invited User",
-            plan_id=plan_id,
+    def test_create_registered_user_with_nickname(self):
+        """Test creating a registered user with nickname."""
+        user = User.create_registered(
+            cpf=CPF("529.982.247-25"),
+            email=Email("registered@example.com"),
+            name="Registered User",
+            password_hash="hashed_password",
+            phone="11999999999",
+            nickname="Nick",
         )
         
-        assert user.plan_id == plan_id
+        assert user.nickname == "Nick"
 
-    def test_is_invited(self):
-        """Test is_invited helper method."""
-        invited = User.create_invited(
-            email=Email("invited@example.com"),
-            name="Invited User",
+    def test_is_registered(self):
+        """Test is_registered helper method."""
+        registered = User.create_registered(
+            cpf=CPF("529.982.247-25"),
+            email=Email("registered@example.com"),
+            name="Registered User",
+            password_hash="hashed_password",
+            phone="11999999999",
         )
         active = User.create(
             cpf=CPF("529.982.247-25"),
@@ -88,48 +94,31 @@ class TestUser:
             password_hash="hashed",
         )
         
-        assert invited.is_invited()
-        assert not active.is_invited()
+        assert registered.is_registered()
+        assert not active.is_registered()
 
     def test_complete_activation(self):
-        """Test completing activation for invited user."""
-        user = User.create_invited(
-            email=Email("invited@example.com"),
-            name="Invited User",
-        )
-        
-        user.complete_activation(
+        """Test completing activation for registered user."""
+        user = User.create_registered(
             cpf=CPF("529.982.247-25"),
-            password_hash="new_hashed_password",
+            email=Email("registered@example.com"),
+            name="Registered User",
+            password_hash="hashed_password",
             phone="11999999999",
             nickname="Nick",
         )
         
+        user.complete_activation()
+        
         assert user.status == UserStatus.ACTIVE
+        # All fields remain unchanged
         assert user.cpf is not None
-        assert user.cpf.formatted == "529.982.247-25"
-        assert user.password_hash == "new_hashed_password"
+        assert user.password_hash == "hashed_password"
         assert user.phone == "11999999999"
         assert user.nickname == "Nick"
 
-    def test_complete_activation_without_nickname(self):
-        """Test activation without providing nickname."""
-        user = User.create_invited(
-            email=Email("invited@example.com"),
-            name="Invited User",
-        )
-        
-        user.complete_activation(
-            cpf=CPF("529.982.247-25"),
-            password_hash="new_hashed_password",
-            phone="11999999999",
-        )
-        
-        assert user.status == UserStatus.ACTIVE
-        assert user.nickname is None
-
-    def test_complete_activation_only_for_invited_users(self):
-        """Test that only invited users can complete activation."""
+    def test_complete_activation_only_for_registered_users(self):
+        """Test that only registered users can complete activation."""
         user = User.create(
             cpf=CPF("529.982.247-25"),
             email=Email("active@example.com"),
@@ -137,12 +126,8 @@ class TestUser:
             password_hash="hashed",
         )
         
-        with pytest.raises(ValueError, match="Only invited users"):
-            user.complete_activation(
-                cpf=CPF("123.456.789-09"),
-                password_hash="new_hash",
-                phone="11999999999",
-            )
+        with pytest.raises(ValueError, match="Only registered users"):
+            user.complete_activation()
 
     def test_user_activation(self):
         """Test user activation/deactivation."""

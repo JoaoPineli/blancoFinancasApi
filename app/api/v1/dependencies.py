@@ -22,6 +22,10 @@ async def get_current_user(
 ) -> User:
     """Dependency to get current authenticated user.
 
+    Allows both ACTIVE and REGISTERED users to authenticate.
+    REGISTERED users need access for the email confirmation page
+    and resend-confirmation endpoint.
+
     Args:
         authorization: Authorization header with Bearer token
         session: Database session
@@ -77,7 +81,8 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if not user.is_active():
+    # Allow ACTIVE and REGISTERED users; reject INACTIVE and DEFAULTING
+    if not user.is_active() and not user.is_registered():
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account is inactive",
@@ -86,15 +91,41 @@ async def get_current_user(
     return user
 
 
-# Type alias for current user dependency
+# Type alias for current user dependency (ACTIVE or REGISTERED)
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
-async def get_current_admin(current_user: CurrentUser) -> User: 
-    """Dependency to get current authenticated admin.
+async def get_active_user(current_user: CurrentUser) -> User:
+    """Dependency to get current authenticated ACTIVE user.
+
+    Rejects REGISTERED users who haven't confirmed their email yet.
 
     Args:
         current_user: Current authenticated user
+
+    Returns:
+        Authenticated active User entity
+
+    Raises:
+        HTTPException: If user is not active
+    """
+    if not current_user.is_active():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account not activated. Please confirm your email.",
+        )
+    return current_user
+
+
+# Type alias for active user dependency (ACTIVE only)
+CurrentActiveUser = Annotated[User, Depends(get_active_user)]
+
+
+async def get_current_admin(current_user: CurrentActiveUser) -> User:
+    """Dependency to get current authenticated admin.
+
+    Args:
+        current_user: Current authenticated active user
 
     Returns:
         Authenticated admin User entity

@@ -18,17 +18,6 @@ class LoginResult:
 
 
 @dataclass
-class RegisterUserInput:
-    """Input for user registration."""
-
-    cpf: str
-    email: str
-    name: str
-    password: str
-    phone: str | None = None
-
-
-@dataclass
 class LoginInput:
     """Input for login."""
 
