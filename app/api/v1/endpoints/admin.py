@@ -9,7 +9,14 @@ from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 
 from app.api.v1.dependencies import CurrentAdmin, DbSession
-from app.api.v1.schemas.user import UserListResponse, UserResponse, UserStatusRequest
+from app.api.v1.schemas.user import (
+    AdminClientListResponse,
+    AdminClientResponse,
+    AdminClientStats,
+    UserListResponse,
+    UserResponse,
+    UserStatusRequest,
+)
 from app.api.v1.schemas.finance import (
     ApproveWithdrawalRequest,
     PixWebhookPayload,
@@ -36,7 +43,7 @@ from app.application.services.plan_service import PlanService
 from app.application.services.withdrawal_service import WithdrawalService
 from app.application.services.yield_service import YieldService
 from app.domain.entities.audit_log import AuditAction, AuditLog
-from app.domain.entities.user import UserStatus
+from app.domain.entities.user import UserRole, UserStatus
 from app.domain.exceptions import (
     AuthorizationError,
     UserNotFoundError,
@@ -56,6 +63,100 @@ from app.infrastructure.exports.excel_generator import ExcelReportGenerator
 router = APIRouter()
 
 
+@router.get(
+    "/clients",
+    response_model=AdminClientListResponse,
+    summary="List clients with pagination, search and stats",
+)
+async def list_clients(
+    session: DbSession,
+    current_admin: CurrentAdmin,
+    status_filter: str | None = Query(
+        None, pattern="^(active|inactive|defaulting|registered)$"
+    ),
+    q: str | None = Query(None, max_length=200, description="Search by name, email or CPF"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+) -> AdminClientListResponse:
+    """List clients (role=client only) with pagination, search and real stats.
+
+    total_invested_cents comes from wallet.total_invested_cents (0 if no wallet).
+    stats counts are always for all clients regardless of current filter.
+    Admin only.
+    """
+    from sqlalchemy import func, or_, select
+    from app.infrastructure.db.models import UserModel, WalletModel
+
+    def _apply_filters(query, *, include_role: bool = True):
+        if include_role:
+            query = query.where(UserModel.role == UserRole.CLIENT.value)
+        if status_filter:
+            query = query.where(UserModel.status == status_filter)
+        if q and q.strip():
+            q_like = f"%{q.strip().lower()}%"
+            q_digits = "".join(c for c in q if c.isdigit())
+            cpf_cond = UserModel.cpf.like(f"%{q_digits}%") if q_digits else None
+            text_cond = or_(
+                func.lower(UserModel.name).like(q_like),
+                func.lower(UserModel.email).like(q_like),
+            )
+            query = query.where(or_(text_cond, cpf_cond) if cpf_cond is not None else text_cond)
+        return query
+
+    # Total count matching filter
+    count_result = await session.execute(
+        _apply_filters(select(func.count(UserModel.id)))
+    )
+    total = count_result.scalar() or 0
+
+    # Per-status stats (all clients, ignoring search/status filter)
+    stats_result = await session.execute(
+        select(UserModel.status, func.count(UserModel.id))
+        .where(UserModel.role == UserRole.CLIENT.value)
+        .group_by(UserModel.status)
+    )
+    stats_map: dict[str, int] = {row[0]: row[1] for row in stats_result.all()}
+
+    # Paginated rows with wallet join
+    offset = (page - 1) * page_size
+    rows_result = await session.execute(
+        _apply_filters(
+            select(
+                UserModel,
+                func.coalesce(WalletModel.total_invested_cents, 0).label("total_invested"),
+            ).outerjoin(WalletModel, WalletModel.user_id == UserModel.id)
+        )
+        .order_by(UserModel.created_at.desc())
+        .limit(page_size)
+        .offset(offset)
+    )
+    rows = rows_result.all()
+
+    return AdminClientListResponse(
+        clients=[
+            AdminClientResponse(
+                id=str(user.id),
+                name=user.name,
+                email=user.email,
+                cpf=user.cpf,
+                status=user.status,
+                phone=user.phone,
+                created_at=user.created_at,
+                total_invested_cents=int(total_invested),
+            )
+            for user, total_invested in rows
+        ],
+        total=total,
+        page=page,
+        page_size=page_size,
+        stats=AdminClientStats(
+            active=stats_map.get("active", 0),
+            inactive=stats_map.get("inactive", 0),
+            defaulting=stats_map.get("defaulting", 0),
+            registered=stats_map.get("registered", 0),
+            total=sum(stats_map.values()),
+        ),
+    )
 
 
 @router.get(
@@ -129,6 +230,11 @@ async def change_user_status(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found",
+        )
+    if not user.role == UserRole.CLIENT:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot change status of non-client users",
         )
 
     old_status = user.status.value
