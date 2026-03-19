@@ -269,3 +269,18 @@ class ProcessYieldsResponse(BaseModel):
     deposits_evaluated: int = Field(..., description="Total deposits examined")
     deposits_credited: int = Field(..., description="Deposits that received new yield")
     total_yield_cents: int = Field(..., description="Total yield credited in cents")
+
+
+# ------------------------------------------------------------------
+# Dashboard Schema
+# ------------------------------------------------------------------
+
+
+class DashboardResponse(BaseModel):
+    """Response schema for the client financial dashboard."""
+
+    total_balance_cents: int = Field(..., description="Total wallet balance in cents")
+    yield_this_month_cents: int = Field(
+        ..., description="Confirmed yield credited in the current UTC month (cents)"
+    )
+    reference_month: str = Field(..., description="Reference month in YYYY-MM format (UTC)")

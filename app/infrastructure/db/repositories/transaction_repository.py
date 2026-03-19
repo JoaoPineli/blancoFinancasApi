@@ -1,5 +1,6 @@
 """Transaction repository implementation."""
 
+from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
 
@@ -98,6 +99,20 @@ class TransactionRepository:
             .where(TransactionModel.subscription_id == subscription_id)
             .where(TransactionModel.transaction_type == TransactionType.YIELD.value)
             .where(TransactionModel.status == TransactionStatus.CONFIRMED.value)
+        )
+        return int(result.scalar())
+
+    async def get_confirmed_yield_sum_for_user_in_range(
+        self, user_id: UUID, start: datetime, end: datetime
+    ) -> int:
+        """Return total confirmed yield for a user within [start, end) (cents)."""
+        result = await self._session.execute(
+            select(func.coalesce(func.sum(TransactionModel.amount_cents), 0))
+            .where(TransactionModel.user_id == user_id)
+            .where(TransactionModel.transaction_type == TransactionType.YIELD.value)
+            .where(TransactionModel.status == TransactionStatus.CONFIRMED.value)
+            .where(TransactionModel.confirmed_at >= start)
+            .where(TransactionModel.confirmed_at < end)
         )
         return int(result.scalar())
 

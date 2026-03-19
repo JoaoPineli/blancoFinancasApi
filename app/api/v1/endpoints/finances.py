@@ -1,5 +1,6 @@
 """Finance endpoints for deposits, withdrawals, and installment payments."""
 
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
@@ -10,6 +11,7 @@ from app.api.v1.schemas.finance import (
     CreateDepositResponse,
     CreateInstallmentPaymentRequest,
     CreateWithdrawalRequest,
+    DashboardResponse,
     HistoryEventResponse,
     HistoryListResponse,
     InstallmentPaymentItemResponse,
@@ -45,8 +47,6 @@ from app.domain.exceptions import (
 )
 from app.infrastructure.db.repositories.transaction_repository import TransactionRepository
 from app.infrastructure.db.repositories.wallet_repository import WalletRepository
-from app.infrastructure.db.repositories.transaction_repository import TransactionRepository
-from app.infrastructure.db.repositories.wallet_repository import WalletRepository
 
 router = APIRouter()
 
@@ -77,6 +77,51 @@ async def get_wallet(
         total_invested_cents=wallet.total_invested_cents,
         total_yield_cents=wallet.total_yield_cents,
         fundo_garantidor_cents=wallet.fundo_garantidor_cents,
+    )
+
+
+@router.get(
+    "/dashboard",
+    response_model=DashboardResponse,
+    summary="Get financial dashboard summary",
+)
+async def get_dashboard(
+    session: DbSession,
+    current_user: CurrentUser,
+) -> DashboardResponse:
+    """Get dashboard summary: total wallet balance and this month's yield.
+
+    Returns 404 if the user has no wallet (registration incomplete).
+    Month boundaries are computed in UTC.
+    """
+    wallet_repo = WalletRepository(session)
+    transaction_repo = TransactionRepository(session)
+
+    wallet = await wallet_repo.get_by_user_id(current_user.id)
+    if not wallet:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Wallet not found",
+        )
+
+    # Use naive UTC datetimes — confirmed_at is stored as naive UTC in the DB
+    now = datetime.utcnow()
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if now.month == 12:
+        month_end = month_start.replace(year=now.year + 1, month=1)
+    else:
+        month_end = month_start.replace(month=now.month + 1)
+
+    yield_sum = await transaction_repo.get_confirmed_yield_sum_for_user_in_range(
+        user_id=current_user.id,
+        start=month_start,
+        end=month_end,
+    )
+
+    return DashboardResponse(
+        total_balance_cents=wallet.balance_cents,
+        yield_this_month_cents=yield_sum,
+        reference_month=now.strftime("%Y-%m"),
     )
 
 
