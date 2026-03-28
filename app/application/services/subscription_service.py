@@ -18,6 +18,7 @@ from app.application.dtos.subscription import (
     RecommendSubscriptionInput,
     SubscriptionResult,
     UpdateDepositDayInput,
+    UpdateNameInput,
 )
 from app.domain.entities.audit_log import AuditAction, AuditLog
 from app.domain.entities.subscription import ALLOWED_DEPOSIT_DAYS, UserPlanSubscription
@@ -343,6 +344,41 @@ class SubscriptionService:
 
         today_local = self._today_local()
         subscription.set_deposit_day(input_data.deposit_day_of_month, today_local)
+
+        saved = await self._subscription_repo.save(subscription)
+
+        plan = await self._plan_repo.get_by_id(saved.plan_id, include_deleted=True)
+        plan_title = plan.title if plan else "Plano removido"
+        yield_cents = await self._transaction_repo.get_yield_sum_by_subscription(saved.id)
+
+        await self._session.commit()
+        return self._to_result(saved, plan_title, yield_cents)
+
+    # ------------------------------------------------------------------
+    # Name update
+    # ------------------------------------------------------------------
+
+    async def update_name(
+        self, input_data: UpdateNameInput
+    ) -> SubscriptionResult:
+        """Update the cosmetic name of a subscription.
+
+        Args:
+            input_data: Contains subscription_id, user_id, name.
+
+        Returns:
+            Updated SubscriptionResult.
+
+        Raises:
+            SubscriptionNotFoundError: If subscription not found or not owned.
+        """
+        subscription = await self._subscription_repo.get_by_id(
+            input_data.subscription_id
+        )
+        if not subscription or subscription.user_id != input_data.user_id:
+            raise SubscriptionNotFoundError(str(input_data.subscription_id))
+
+        subscription.name = input_data.name
 
         saved = await self._subscription_repo.save(subscription)
 

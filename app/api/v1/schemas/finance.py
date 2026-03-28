@@ -230,6 +230,9 @@ class HistoryEventResponse(BaseModel):
     plan_titles: list[str] = Field(
         default_factory=list, description="Associated plan titles"
     )
+    subscription_ids: list[str] = Field(
+        default_factory=list, description="Associated subscription UUIDs"
+    )
     created_at: str = Field(..., description="Date (ISO format)")
     confirmed_at: Optional[str] = Field(None, description="Confirmation date (ISO format)")
 

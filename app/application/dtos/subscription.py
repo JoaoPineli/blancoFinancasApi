@@ -48,6 +48,15 @@ class UpdateDepositDayInput:
 
 
 @dataclass
+class UpdateNameInput:
+    """Input for updating the cosmetic name of a subscription."""
+
+    user_id: UUID
+    subscription_id: UUID
+    name: str
+
+
+@dataclass
 class SubscriptionResult:
     """Result containing subscription data."""
 

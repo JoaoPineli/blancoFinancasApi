@@ -480,6 +480,7 @@ async def get_history(
                 amount_cents=e.amount_cents,
                 description=e.description,
                 plan_titles=e.plan_titles,
+                subscription_ids=e.subscription_ids,
                 created_at=e.created_at.isoformat(),
                 confirmed_at=e.confirmed_at.isoformat() if e.confirmed_at else None,
             )

@@ -16,12 +16,14 @@ from app.api.v1.schemas.subscription import (
     SubscriptionListResponse,
     SubscriptionResponse,
     UpdateDepositDayRequest,
+    UpdateNameRequest,
 )
 from app.application.dtos.subscription import (
     CalculateCostInput,
     CreateSubscriptionInput,
     RecommendSubscriptionInput,
     UpdateDepositDayInput,
+    UpdateNameInput,
 )
 from app.application.services.subscription_service import SubscriptionService
 from app.domain.exceptions import (
@@ -309,6 +311,62 @@ async def update_deposit_day(
     except InvalidSubscriptionError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
+            detail=e.message,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+
+@router.patch(
+    "/{subscription_id}/name",
+    response_model=SubscriptionResponse,
+    summary="Update subscription name",
+)
+async def update_name(
+    subscription_id: str,
+    request: UpdateNameRequest,
+    session: DbSession,
+    current_user: CurrentUser,
+) -> SubscriptionResponse:
+    """Update the cosmetic name of a subscription."""
+    service = SubscriptionService(session)
+
+    try:
+        input_data = UpdateNameInput(
+            user_id=current_user.id,
+            subscription_id=UUID(subscription_id),
+            name=request.name,
+        )
+        result = await service.update_name(input_data)
+
+        return SubscriptionResponse(
+            id=str(result.id),
+            user_id=str(result.user_id),
+            plan_id=str(result.plan_id),
+            plan_title=result.plan_title,
+            name=result.name,
+            target_amount_cents=result.target_amount_cents,
+            deposit_count=result.deposit_count,
+            monthly_amount_cents=result.monthly_amount_cents,
+            admin_tax_value_cents=result.admin_tax_value_cents,
+            insurance_percent=result.insurance_percent,
+            guarantee_fund_percent=result.guarantee_fund_percent,
+            total_cost_cents=result.total_cost_cents,
+            deposit_day_of_month=result.deposit_day_of_month,
+            next_due_date=result.next_due_date,
+            has_overdue_deposit=result.has_overdue_deposit,
+            status=result.status,
+            created_at=result.created_at,
+            accumulated_cents=result.accumulated_cents,
+            deposits_paid=result.deposits_paid,
+            yield_cents=result.yield_cents,
+        )
+    except SubscriptionNotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
             detail=e.message,
         )
     except ValueError as e:

@@ -595,6 +595,7 @@ class InstallmentPaymentService:
         )
         for p in payments:
             plan_titles = list({item.plan_title for item in p.items})
+            subscription_ids = list({str(item.subscription_id) for item in p.items})
             item_count = len(p.items)
             desc = (
                 f"Pagamento de {item_count} "
@@ -608,6 +609,7 @@ class InstallmentPaymentService:
                     amount_cents=p.total_amount_cents,
                     description=desc,
                     plan_titles=plan_titles,
+                    subscription_ids=subscription_ids,
                     created_at=p.created_at,
                     confirmed_at=p.confirmed_at,
                 )
@@ -629,6 +631,7 @@ class InstallmentPaymentService:
                     amount_cents=w.amount_cents,
                     description=w.description or "Retirada de valor",
                     plan_titles=[],
+                    subscription_ids=[str(w.subscription_id)] if w.subscription_id else [],
                     created_at=w.created_at,
                     confirmed_at=w.confirmed_at,
                 )

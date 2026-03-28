@@ -64,6 +64,12 @@ class UpdateDepositDayRequest(BaseModel):
     )
 
 
+class UpdateNameRequest(BaseModel):
+    """Request schema for updating the subscription name."""
+
+    name: str = Field(..., min_length=1, max_length=120)
+
+
 class SubscriptionResponse(BaseModel):
     """Response schema for a single subscription."""
 

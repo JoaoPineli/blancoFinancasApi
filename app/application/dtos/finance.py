@@ -207,6 +207,7 @@ class HistoryEventDTO:
     amount_cents: int
     description: str
     plan_titles: List[str]
+    subscription_ids: List[str]
     created_at: datetime
     confirmed_at: Optional[datetime] = None
 
