@@ -18,13 +18,18 @@ from app.api.v1.schemas.user import (
     UserStatusRequest,
 )
 from app.api.v1.schemas.finance import (
+    AdminWithdrawalListResponse,
+    AdminWithdrawalResponse,
     ApproveWithdrawalRequest,
+    NotificationListResponse,
+    NotificationResponse,
     PixWebhookPayload,
     ProcessYieldsRequest,
     ProcessYieldsResponse,
     RejectWithdrawalRequest,
     TransactionListResponse,
     TransactionResponse,
+    UnreadCountResponse,
 )
 from app.api.v1.schemas.plan import (
     CreatePlanRequest,
@@ -39,6 +44,7 @@ from app.application.services.deposit_service import CreateDepositService
 from app.application.services.installment_payment_service import (
     InstallmentPaymentService,
 )
+from app.application.services.notification_service import NotificationService
 from app.application.services.plan_service import PlanService
 from app.application.services.withdrawal_service import WithdrawalService
 from app.application.services.yield_service import YieldService
@@ -325,6 +331,62 @@ async def get_pending_withdrawals(
             for m in models
         ],
         total=len(models),
+    )
+
+
+@router.get(
+    "/withdrawals",
+    response_model=AdminWithdrawalListResponse,
+    summary="List all withdrawals",
+)
+async def list_all_withdrawals(
+    session: DbSession,
+    current_admin: CurrentAdmin,
+    status_filter: str | None = Query(None, description="Filter by status"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> AdminWithdrawalListResponse:
+    """List all withdrawal transactions with client name enrichment.
+
+    Admin only endpoint.
+    """
+    from sqlalchemy import select
+    from app.infrastructure.db.models import TransactionModel, UserModel
+    from app.domain.entities.transaction import TransactionType
+
+    query = (
+        select(TransactionModel, UserModel.name)
+        .join(UserModel, TransactionModel.user_id == UserModel.id)
+        .where(TransactionModel.transaction_type == TransactionType.WITHDRAWAL.value)
+        .order_by(TransactionModel.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    if status_filter:
+        query = query.where(TransactionModel.status == status_filter)
+
+    result = await session.execute(query)
+    rows = result.all()
+
+    return AdminWithdrawalListResponse(
+        withdrawals=[
+            AdminWithdrawalResponse(
+                id=str(m.id),
+                user_id=str(m.user_id),
+                user_name=user_name,
+                owner_name=m.bank_account,
+                pix_key=m.pix_key,
+                pix_key_type=m.pix_key_type,
+                amount_cents=m.amount_cents,
+                status=m.status,
+                rejection_reason=m.rejection_reason,
+                description=m.description,
+                created_at=m.created_at,
+                confirmed_at=m.confirmed_at,
+            )
+            for m, user_name in rows
+        ],
+        total=len(rows),
     )
 
 
@@ -918,3 +980,122 @@ async def process_yields(
         deposits_credited=result.deposits_credited,
         total_yield_cents=result.total_yield_cents,
     )
+
+
+# ============================================================================
+# Notification Endpoints (Admin Only)
+# ============================================================================
+
+
+@router.get(
+    "/notifications",
+    response_model=NotificationListResponse,
+    summary="List admin notifications",
+)
+async def list_notifications(
+    session: DbSession,
+    current_admin: CurrentAdmin,
+    unread_only: bool = Query(False, description="Return only unread notifications"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> NotificationListResponse:
+    """List notifications for the admin panel.
+
+    Admin only endpoint.
+    """
+    service = NotificationService(session)
+    result = await service.get_all(unread_only=unread_only, limit=limit, offset=offset)
+
+    return NotificationListResponse(
+        notifications=[
+            NotificationResponse(
+                id=str(n.id),
+                notification_type=n.notification_type,
+                title=n.title,
+                message=n.message,
+                is_read=n.is_read,
+                target_id=str(n.target_id) if n.target_id else None,
+                target_type=n.target_type,
+                data=n.data,
+                created_at=n.created_at,
+                read_at=n.read_at,
+            )
+            for n in result.notifications
+        ],
+        total=result.total,
+        unread_count=result.unread_count,
+    )
+
+
+@router.get(
+    "/notifications/unread-count",
+    response_model=UnreadCountResponse,
+    summary="Get unread notification count",
+)
+async def get_unread_count(
+    session: DbSession,
+    current_admin: CurrentAdmin,
+) -> UnreadCountResponse:
+    """Return the number of unread admin notifications.
+
+    Admin only endpoint.
+    """
+    service = NotificationService(session)
+    count = await service.get_unread_count()
+    return UnreadCountResponse(unread_count=count)
+
+
+@router.patch(
+    "/notifications/{notification_id}/read",
+    response_model=NotificationResponse,
+    summary="Mark notification as read",
+)
+async def mark_notification_as_read(
+    notification_id: str,
+    session: DbSession,
+    current_admin: CurrentAdmin,
+) -> NotificationResponse:
+    """Mark a single notification as read.
+
+    Admin only endpoint.
+    """
+    from app.domain.exceptions import NotificationNotFoundError
+
+    service = NotificationService(session)
+
+    try:
+        n = await service.mark_as_read(UUID(notification_id))
+        return NotificationResponse(
+            id=str(n.id),
+            notification_type=n.notification_type,
+            title=n.title,
+            message=n.message,
+            is_read=n.is_read,
+            target_id=str(n.target_id) if n.target_id else None,
+            target_type=n.target_type,
+            data=n.data,
+            created_at=n.created_at,
+            read_at=n.read_at,
+        )
+    except NotificationNotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=e.message,
+        )
+
+
+@router.post(
+    "/notifications/mark-all-read",
+    summary="Mark all notifications as read",
+)
+async def mark_all_notifications_as_read(
+    session: DbSession,
+    current_admin: CurrentAdmin,
+) -> dict:
+    """Mark all notifications as read.
+
+    Admin only endpoint.
+    """
+    service = NotificationService(session)
+    count = await service.mark_all_as_read()
+    return {"marked_as_read": count}

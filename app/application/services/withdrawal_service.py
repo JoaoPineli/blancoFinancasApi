@@ -19,6 +19,7 @@ from app.domain.exceptions import (
 )
 from app.domain.value_objects.money import Money
 from app.infrastructure.db.repositories.audit_log_repository import AuditLogRepository
+from app.infrastructure.db.repositories.subscription_repository import SubscriptionRepository
 from app.infrastructure.db.repositories.user_repository import UserRepository
 from app.infrastructure.db.repositories.transaction_repository import TransactionRepository
 from app.infrastructure.db.repositories.wallet_repository import WalletRepository
@@ -33,6 +34,7 @@ class WithdrawalService:
         self._transaction_repo = TransactionRepository(session)
         self._wallet_repo = WalletRepository(session)
         self._user_repo = UserRepository(session)
+        self._subscription_repo = SubscriptionRepository(session)
         self._audit_repo = AuditLogRepository(session)
 
     async def create_withdrawal_request(
@@ -177,9 +179,20 @@ class WithdrawalService:
                 f"Cannot reject transaction in {transaction.status.value} status"
             )
 
-        # Cancel transaction
-        transaction.cancel()
+        # Cancel transaction with reason
+        transaction.reject_with_reason(reason)
         saved_transaction = await self._transaction_repo.save(transaction)
+
+        # Reinstate subscription if this was a plan withdrawal
+        if transaction.subscription_id:
+            sub = await self._subscription_repo.get_by_id(transaction.subscription_id)
+            if sub:
+                from app.domain.entities.subscription import SubscriptionStatus
+                if sub.deposits_paid >= sub.deposit_count:
+                    sub.status = SubscriptionStatus.COMPLETED
+                else:
+                    sub.status = SubscriptionStatus.ACTIVE
+                await self._subscription_repo.save(sub)
 
         # Create audit log
         audit = AuditLog.create(
@@ -213,6 +226,46 @@ class WithdrawalService:
         )
         return [self._to_dto(t) for t in transactions]
 
+    async def get_all_withdrawals(
+        self,
+        status_filter: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[TransactionDTO]:
+        """Get all withdrawal transactions for admin listing.
+
+        Args:
+            status_filter: Optional status string to filter by
+            limit: Max records to return
+            offset: Pagination offset
+
+        Returns:
+            List of TransactionDTO
+        """
+        from sqlalchemy import select
+        from app.infrastructure.db.models import TransactionModel
+        from app.domain.entities.transaction import TransactionType
+
+        query = (
+            select(TransactionModel)
+            .where(TransactionModel.transaction_type == TransactionType.WITHDRAWAL.value)
+            .order_by(TransactionModel.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        if status_filter:
+            query = query.where(TransactionModel.status == status_filter)
+
+        result = await self._session.execute(query)
+        models = result.scalars().all()
+
+        dtos = []
+        for m in models:
+            t = self._transaction_repo._to_entity(m)
+            # Enrich with user name stored in bank_account (owner_name)
+            dtos.append(self._to_dto(t))
+        return dtos
+
     def _to_dto(self, transaction: Transaction) -> TransactionDTO:
         """Convert Transaction entity to DTO."""
         return TransactionDTO(
@@ -227,9 +280,11 @@ class WithdrawalService:
             if transaction.installment_type
             else None,
             pix_key=transaction.pix_key,
+            pix_key_type=transaction.pix_key_type,
             pix_transaction_id=transaction.pix_transaction_id,
             bank_account=transaction.bank_account,
             description=transaction.description,
+            rejection_reason=transaction.rejection_reason,
             created_at=transaction.created_at,
             confirmed_at=transaction.confirmed_at,
         )

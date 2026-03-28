@@ -166,3 +166,10 @@ class DuplicatePaymentError(DomainError):
 
     def __init__(self, message: str = "Duplicate payment detected") -> None:
         super().__init__(message)
+
+
+class NotificationNotFoundError(DomainError):
+    """Raised when a notification is not found."""
+
+    def __init__(self, notification_id: str) -> None:
+        super().__init__(f"Notification not found: {notification_id}")

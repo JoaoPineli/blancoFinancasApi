@@ -56,9 +56,11 @@ class Transaction:
     installment_number: Optional[int]
     installment_type: Optional[InstallmentType]
     pix_key: Optional[str]
+    pix_key_type: Optional[str]
     pix_transaction_id: Optional[str]
     bank_account: Optional[str]
     description: Optional[str]
+    rejection_reason: Optional[str]
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
     confirmed_at: Optional[datetime] = None
@@ -87,9 +89,11 @@ class Transaction:
             installment_number=installment_number,
             installment_type=installment_type,
             pix_key=pix_key,
+            pix_key_type=None,
             pix_transaction_id=None,
             bank_account=None,
             description=description,
+            rejection_reason=None,
             created_at=now,
             updated_at=now,
         )
@@ -101,6 +105,9 @@ class Transaction:
         amount_cents: int,
         bank_account: str,
         description: Optional[str] = None,
+        pix_key: Optional[str] = None,
+        pix_key_type: Optional[str] = None,
+        subscription_id: Optional[UUID] = None,
     ) -> Transaction:
         """Factory method to create a withdrawal transaction."""
         now = datetime.utcnow()
@@ -108,16 +115,18 @@ class Transaction:
             id=uuid4(),
             user_id=user_id,
             contract_id=None,
-            subscription_id=None,
+            subscription_id=subscription_id,
             transaction_type=TransactionType.WITHDRAWAL,
             status=TransactionStatus.PENDING,
             amount_cents=amount_cents,
             installment_number=None,
             installment_type=None,
-            pix_key=None,
+            pix_key=pix_key,
+            pix_key_type=pix_key_type,
             pix_transaction_id=None,
             bank_account=bank_account,
             description=description,
+            rejection_reason=None,
             created_at=now,
             updated_at=now,
         )
@@ -144,9 +153,11 @@ class Transaction:
             installment_number=None,
             installment_type=None,
             pix_key=None,
+            pix_key_type=None,
             pix_transaction_id=None,
             bank_account=None,
             description=description,
+            rejection_reason=None,
             created_at=now,
             updated_at=now,
             confirmed_at=now,
@@ -173,9 +184,11 @@ class Transaction:
             installment_number=installment_number,
             installment_type=None,
             pix_key=None,
+            pix_key_type=None,
             pix_transaction_id=None,
             bank_account=None,
             description=f"Fundo Garantidor - Parcela {installment_number}",
+            rejection_reason=None,
             created_at=now,
             updated_at=now,
             confirmed_at=now,
@@ -207,6 +220,11 @@ class Transaction:
 
         self.status = TransactionStatus.CANCELLED
         self.updated_at = datetime.utcnow()
+
+    def reject_with_reason(self, reason: str) -> None:
+        """Cancel the transaction with an admin rejection reason."""
+        self.rejection_reason = reason
+        self.cancel()
 
     def fail(self) -> None:
         """Mark transaction as failed."""

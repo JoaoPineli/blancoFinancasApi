@@ -196,6 +196,9 @@ class RequestPlanWithdrawalRequest(BaseModel):
     """Request schema for requesting a plan withdrawal."""
 
     subscription_id: str = Field(..., description="Subscription UUID")
+    owner_name: str = Field(..., min_length=3, max_length=200, description="Full name of Pix account owner")
+    pix_key_type: str = Field(..., pattern="^(email|cpf|celular|aleatoria)$", description="Pix key type")
+    pix_key: str = Field(..., min_length=5, max_length=200, description="Pix key value")
 
 
 class PlanWithdrawalResponse(BaseModel):
@@ -235,6 +238,7 @@ class HistoryEventResponse(BaseModel):
     )
     created_at: str = Field(..., description="Date (ISO format)")
     confirmed_at: Optional[str] = Field(None, description="Confirmation date (ISO format)")
+    rejection_reason: Optional[str] = Field(None, description="Rejection reason (plan withdrawals only)")
 
 
 class HistoryListResponse(BaseModel):
@@ -287,3 +291,66 @@ class DashboardResponse(BaseModel):
         ..., description="Confirmed yield credited in the current UTC month (cents)"
     )
     reference_month: str = Field(..., description="Reference month in YYYY-MM format (UTC)")
+
+
+# ------------------------------------------------------------------
+# Admin Withdrawal Schemas
+# ------------------------------------------------------------------
+
+
+class AdminWithdrawalResponse(BaseModel):
+    """Response schema for a withdrawal in the admin listing."""
+
+    id: str = Field(..., description="Transaction UUID")
+    user_id: str = Field(..., description="User UUID")
+    user_name: str = Field(..., description="Client name")
+    owner_name: Optional[str] = Field(None, description="Pix account owner name (bank_account field)")
+    pix_key: Optional[str] = Field(None, description="Pix key")
+    pix_key_type: Optional[str] = Field(None, description="Pix key type")
+    amount_cents: int = Field(..., description="Amount in cents")
+    status: str = Field(..., description="Transaction status")
+    rejection_reason: Optional[str] = Field(None, description="Rejection reason")
+    description: Optional[str] = Field(None, description="Description")
+    created_at: datetime = Field(..., description="Creation date")
+    confirmed_at: Optional[datetime] = Field(None, description="Confirmation date")
+
+
+class AdminWithdrawalListResponse(BaseModel):
+    """Response schema for the admin withdrawal listing."""
+
+    withdrawals: list[AdminWithdrawalResponse] = Field(..., description="List of withdrawals")
+    total: int = Field(..., description="Total count")
+
+
+# ------------------------------------------------------------------
+# Notification Schemas
+# ------------------------------------------------------------------
+
+
+class NotificationResponse(BaseModel):
+    """Response schema for a single notification."""
+
+    id: str = Field(..., description="Notification UUID")
+    notification_type: str = Field(..., description="Notification type")
+    title: str = Field(..., description="Title")
+    message: str = Field(..., description="Message")
+    is_read: bool = Field(..., description="Whether the notification has been read")
+    target_id: Optional[str] = Field(None, description="Related entity UUID")
+    target_type: Optional[str] = Field(None, description="Related entity type")
+    data: dict = Field(default_factory=dict, description="Extra data")
+    created_at: datetime = Field(..., description="Creation date")
+    read_at: Optional[datetime] = Field(None, description="Date marked as read")
+
+
+class NotificationListResponse(BaseModel):
+    """Response schema for notification listing."""
+
+    notifications: list[NotificationResponse] = Field(..., description="List of notifications")
+    total: int = Field(..., description="Total in current page")
+    unread_count: int = Field(..., description="Total unread notifications")
+
+
+class UnreadCountResponse(BaseModel):
+    """Response schema for unread notification count."""
+
+    unread_count: int = Field(..., description="Number of unread notifications")

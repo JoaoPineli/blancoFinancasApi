@@ -419,6 +419,9 @@ async def request_plan_withdrawal(
         input_data = RequestPlanWithdrawalInput(
             user_id=current_user.id,
             subscription_id=UUID(request.subscription_id),
+            owner_name=request.owner_name,
+            pix_key_type=request.pix_key_type,
+            pix_key=request.pix_key,
         )
         result = await service.request_plan_withdrawal(input_data)
 
@@ -483,6 +486,7 @@ async def get_history(
                 subscription_ids=e.subscription_ids,
                 created_at=e.created_at.isoformat(),
                 confirmed_at=e.confirmed_at.isoformat() if e.confirmed_at else None,
+                rejection_reason=e.rejection_reason,
             )
             for e in result.events
         ],

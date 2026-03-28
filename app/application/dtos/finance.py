@@ -32,9 +32,11 @@ class TransactionDTO:
     installment_number: Optional[int]
     installment_type: Optional[str]
     pix_key: Optional[str]
+    pix_key_type: Optional[str]
     pix_transaction_id: Optional[str]
     bank_account: Optional[str]
     description: Optional[str]
+    rejection_reason: Optional[str]
     created_at: datetime
     confirmed_at: Optional[datetime]
 
@@ -177,6 +179,9 @@ class RequestPlanWithdrawalInput:
 
     user_id: UUID
     subscription_id: UUID
+    owner_name: str = ""
+    pix_key_type: str = ""
+    pix_key: str = ""
 
 
 @dataclass
@@ -210,6 +215,7 @@ class HistoryEventDTO:
     subscription_ids: List[str]
     created_at: datetime
     confirmed_at: Optional[datetime] = None
+    rejection_reason: Optional[str] = None
 
 
 @dataclass

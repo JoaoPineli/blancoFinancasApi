@@ -32,6 +32,7 @@ from app.application.dtos.finance import (
 )
 from app.domain.entities.audit_log import AuditAction, AuditLog
 from app.domain.entities.installment_payment import InstallmentPayment, PaymentStatus
+from app.domain.entities.notification import Notification
 from app.domain.entities.subscription import SubscriptionStatus
 from app.domain.entities.transaction import Transaction, TransactionType
 from app.domain.exceptions import (
@@ -48,6 +49,8 @@ from app.infrastructure.db.repositories.audit_log_repository import AuditLogRepo
 from app.infrastructure.db.repositories.installment_payment_repository import (
     InstallmentPaymentRepository,
 )
+from app.infrastructure.db.repositories.notification_repository import NotificationRepository
+from app.infrastructure.db.repositories.user_repository import UserRepository
 from app.infrastructure.db.repositories.plan_repository import PlanRepository
 from app.infrastructure.db.repositories.principal_deposit_repository import (
     PrincipalDepositRepository,
@@ -80,6 +83,8 @@ class InstallmentPaymentService:
         self._transaction_repo = TransactionRepository(session)
         self._audit_repo = AuditLogRepository(session)
         self._principal_deposit_repo = PrincipalDepositRepository(session)
+        self._notification_repo = NotificationRepository(session)
+        self._user_repo = UserRepository(session)
         self._pix_gateway = PixGatewayAdapter()
 
     # ------------------------------------------------------------------
@@ -533,7 +538,10 @@ class InstallmentPaymentService:
         transaction = Transaction.create_withdrawal(
             user_id=input_data.user_id,
             amount_cents=amount_cents,
-            bank_account="",  # To be filled by admin
+            bank_account=input_data.owner_name,
+            pix_key=input_data.pix_key,
+            pix_key_type=input_data.pix_key_type,
+            subscription_id=sub.id,
             description=description,
         )
         await self._transaction_repo.save(transaction)
@@ -552,6 +560,18 @@ class InstallmentPaymentService:
             },
         )
         await self._audit_repo.save(audit)
+
+        # Create admin notification
+        client = await self._user_repo.get_by_id(input_data.user_id)
+        client_name = client.name if client else "Cliente"
+        notification = Notification.create_withdrawal_requested(
+            target_id=transaction.id,
+            client_name=client_name,
+            plan_title=plan_title,
+            amount_cents=amount_cents,
+        )
+        await self._notification_repo.save(notification)
+
         await self._session.commit()
 
         return PlanWithdrawalDTO(
@@ -634,6 +654,7 @@ class InstallmentPaymentService:
                     subscription_ids=[str(w.subscription_id)] if w.subscription_id else [],
                     created_at=w.created_at,
                     confirmed_at=w.confirmed_at,
+                    rejection_reason=w.rejection_reason,
                 )
             )
 

@@ -171,9 +171,11 @@ class TransactionModel(Base):
     installment_number: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     installment_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     pix_key: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    pix_key_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     pix_transaction_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
-    bank_account: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    bank_account: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    rejection_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
@@ -418,3 +420,25 @@ class InstallmentPaymentItemModel(Base):
         ),
     )
 
+
+class NotificationModel(Base):
+    """SQLAlchemy model for admin notifications."""
+
+    __tablename__ = "notifications"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    notification_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    target_id: Mapped[Optional[UUID]] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    target_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    data: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    read_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("ix_notifications_notification_type", "notification_type"),
+        Index("ix_notifications_is_read", "is_read"),
+        Index("ix_notifications_created_at", "created_at"),
+    )

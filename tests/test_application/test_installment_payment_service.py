@@ -847,6 +847,129 @@ class TestGetUserHistory:
 
 
 # ---------------------------------------------------------------------------
+# Plan withdrawal with Pix data and notification
+# ---------------------------------------------------------------------------
+
+
+class TestRequestPlanWithdrawalPixAndNotification:
+    """Tests for Pix data propagation and notification creation in request_plan_withdrawal."""
+
+    @staticmethod
+    async def _get_withdrawal_tx(session, user_id):
+        """Fetch the most recent pending withdrawal transaction for a user."""
+        from app.infrastructure.db.repositories.transaction_repository import TransactionRepository
+        from app.domain.entities.transaction import TransactionStatus, TransactionType
+        txs = await TransactionRepository(session).get_by_user_id(
+            user_id=user_id,
+            transaction_type=TransactionType.WITHDRAWAL,
+            status=TransactionStatus.PENDING,
+        )
+        assert txs, "Expected at least one pending withdrawal"
+        return txs[0]
+
+    @pytest.mark.asyncio
+    async def test_pix_data_stored_on_transaction(self, test_session):
+        """Pix fields (owner_name→bank_account, pix_key, pix_key_type) are stored."""
+        user = await _create_user(test_session)
+        plan = await _create_plan(test_session)
+        sub = await _create_subscription(
+            test_session, user.id, plan.id,
+            deposit_count=6, deposits_paid=6,
+            status=SubscriptionStatus.COMPLETED,
+        )
+        await test_session.commit()
+
+        service = InstallmentPaymentService(test_session)
+        await service.request_plan_withdrawal(
+            RequestPlanWithdrawalInput(
+                user_id=user.id,
+                subscription_id=sub.id,
+                owner_name="João da Silva",
+                pix_key_type="cpf",
+                pix_key="529.982.247-25",
+            )
+        )
+        await test_session.commit()
+
+        tx = await self._get_withdrawal_tx(test_session, user.id)
+        assert tx.bank_account == "João da Silva"
+        assert tx.pix_key == "529.982.247-25"
+        assert tx.pix_key_type == "cpf"
+
+    @pytest.mark.asyncio
+    async def test_subscription_id_stored_on_transaction(self, test_session):
+        """transaction.subscription_id links back to the source subscription."""
+        user = await _create_user(test_session)
+        plan = await _create_plan(test_session)
+        sub = await _create_subscription(
+            test_session, user.id, plan.id,
+            deposit_count=6, deposits_paid=6,
+            status=SubscriptionStatus.COMPLETED,
+        )
+        await test_session.commit()
+
+        service = InstallmentPaymentService(test_session)
+        await service.request_plan_withdrawal(
+            RequestPlanWithdrawalInput(
+                user_id=user.id,
+                subscription_id=sub.id,
+                owner_name="Maria",
+                pix_key_type="email",
+                pix_key="maria@test.com",
+            )
+        )
+        await test_session.commit()
+
+        tx = await self._get_withdrawal_tx(test_session, user.id)
+        assert tx.subscription_id == sub.id
+
+    @pytest.mark.asyncio
+    async def test_notification_created_on_withdrawal_request(self, test_session):
+        """A WITHDRAWAL_REQUESTED notification is persisted when a plan withdrawal is requested."""
+        from app.infrastructure.db.repositories.notification_repository import NotificationRepository
+        from app.domain.entities.notification import NotificationType
+
+        user = await _create_user(test_session)
+        plan = await _create_plan(test_session)
+        sub = await _create_subscription(
+            test_session, user.id, plan.id,
+            deposit_count=6, deposits_paid=6,
+            status=SubscriptionStatus.COMPLETED,
+        )
+        await test_session.commit()
+
+        # Count notifications before
+        notif_repo = NotificationRepository(test_session)
+        before = await notif_repo.get_all(unread_only=False, limit=200, offset=0)
+        count_before = len([n for n in before if n.notification_type == NotificationType.WITHDRAWAL_REQUESTED])
+
+        service = InstallmentPaymentService(test_session)
+        await service.request_plan_withdrawal(
+            RequestPlanWithdrawalInput(
+                user_id=user.id,
+                subscription_id=sub.id,
+                owner_name="Carlos",
+                pix_key_type="aleatoria",
+                pix_key="abc123-uuid-key",
+            )
+        )
+        await test_session.commit()
+
+        tx = await self._get_withdrawal_tx(test_session, user.id)
+
+        after = await notif_repo.get_all(unread_only=False, limit=200, offset=0)
+        withdrawal_notifs = [n for n in after if n.notification_type == NotificationType.WITHDRAWAL_REQUESTED]
+        assert len(withdrawal_notifs) == count_before + 1
+
+        # Find notification for this specific transaction
+        notif_for_tx = next(
+            (n for n in withdrawal_notifs if n.target_id == tx.id), None
+        )
+        assert notif_for_tx is not None, f"No notification found with target_id={tx.id}"
+        assert notif_for_tx.is_read is False
+
+
+# ---------------------------------------------------------------------------
 # Lazy expiration
 # ---------------------------------------------------------------------------
 
