@@ -51,7 +51,7 @@ class InstallmentPaymentItem:
 class InstallmentPayment:
     """Entity representing a grouped Pix payment for subscription installments.
 
-    Invariant: total_amount_cents MUST equal the sum of item amounts.
+    Invariant: total_amount_cents MUST equal the sum of item amounts plus pix_transaction_fee_cents.
     No free-form amount is accepted; every cent is tied to specific installments.
     """
 
@@ -66,6 +66,7 @@ class InstallmentPayment:
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
     confirmed_at: Optional[datetime] = None
+    pix_transaction_fee_cents: int = 0
 
     def __post_init__(self) -> None:
         self._validate_invariants()
@@ -76,10 +77,11 @@ class InstallmentPayment:
         if not self.items:
             raise ValueError("Payment must contain at least one item")
         items_total = sum(item.amount_cents for item in self.items)
-        if items_total != self.total_amount_cents:
+        expected_total = items_total + self.pix_transaction_fee_cents
+        if expected_total != self.total_amount_cents:
             raise ValueError(
                 f"Total amount ({self.total_amount_cents}) does not match "
-                f"sum of items ({items_total})"
+                f"sum of items ({items_total}) + pix fee ({self.pix_transaction_fee_cents})"
             )
 
     @classmethod
@@ -89,6 +91,7 @@ class InstallmentPayment:
         items_data: List[dict],
         pix_qr_code_data: str,
         expiration_minutes: int = 30,
+        pix_transaction_fee_cents: int = 0,
     ) -> InstallmentPayment:
         """Factory method to create a new installment payment.
 
@@ -98,6 +101,7 @@ class InstallmentPayment:
                         plan_title, amount_cents, installment_number.
             pix_qr_code_data: Pix QR code payload.
             expiration_minutes: QR code expiration in minutes.
+            pix_transaction_fee_cents: Pix transaction fee in cents (0.99% of base).
 
         Returns:
             A new InstallmentPayment in PENDING status.
@@ -124,7 +128,8 @@ class InstallmentPayment:
             for item in items_data
         ]
 
-        total = sum(item.amount_cents for item in items)
+        base_total = sum(item.amount_cents for item in items)
+        total = base_total + pix_transaction_fee_cents
 
         return cls(
             id=payment_id,
@@ -138,6 +143,7 @@ class InstallmentPayment:
             created_at=now,
             updated_at=now,
             confirmed_at=None,
+            pix_transaction_fee_cents=pix_transaction_fee_cents,
         )
 
     def confirm(self, pix_transaction_id: str) -> bool:

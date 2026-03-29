@@ -249,7 +249,11 @@ class InstallmentPaymentService:
                 }
             )
 
-        total_cents = sum(item["amount_cents"] for item in items_data)
+        from app.domain.constants import calculate_pix_fee
+
+        base_total_cents = sum(item["amount_cents"] for item in items_data)
+        pix_fee_cents = calculate_pix_fee(base_total_cents)
+        total_cents = base_total_cents + pix_fee_cents
 
         # Generate Pix via gateway
         from uuid import uuid4
@@ -271,6 +275,7 @@ class InstallmentPaymentService:
             items_data=items_data,
             pix_qr_code_data=pix_payload.qr_code_data,
             expiration_minutes=pix_payload.expiration_minutes,
+            pix_transaction_fee_cents=pix_fee_cents,
         )
         payment.pix_transaction_id = pix_payload.transaction_id
 
@@ -382,7 +387,10 @@ class InstallmentPaymentService:
                 amount = Money.from_cents(item.amount_cents)
                 calculator = InstallmentCalculator(sub.guarantee_fund_percent)
 
-                if item.installment_number == 1:
+                # When covers_activation_fees is True, admin/insurance were already
+                # paid at activation, so ALL installments are treated as "subsequent"
+                # (investment + fundo only).
+                if item.installment_number == 1 and not sub.covers_activation_fees:
                     breakdown = calculator.calculate_first_installment(amount)
                 else:
                     breakdown = calculator.calculate_subsequent_installment(amount)
@@ -394,7 +402,7 @@ class InstallmentPaymentService:
                 # Record principal deposit for poupança yield tracking.
                 # Idempotent: skip if a record already exists for this item
                 # (handles re-delivery of a confirmed webhook).
-                existing = await self._principal_deposit_repo.get_by_item_id(item.id)
+                existing = await self._principal_deposit_repo.get_by_item_id(item.id)  # type: ignore[attr-defined]
                 if not existing and breakdown.investment_amount.cents > 0:
                     principal_deposit = PrincipalDeposit.create(
                         user_id=payment.user_id,
@@ -690,6 +698,7 @@ class InstallmentPaymentService:
                 )
                 for item in payment.items
             ],
+            pix_transaction_fee_cents=payment.pix_transaction_fee_cents,
             created_at=payment.created_at,
             updated_at=payment.updated_at,
             confirmed_at=payment.confirmed_at,

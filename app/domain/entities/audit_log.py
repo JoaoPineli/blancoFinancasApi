@@ -48,6 +48,11 @@ class AuditAction(Enum):
     # Yield batch actions
     YIELD_BATCH_PROCESSED = "yield_batch_processed"
 
+    # Subscription activation payment actions
+    SUBSCRIPTION_ACTIVATION_PAYMENT_CREATED = "subscription_activation_payment_created"
+    SUBSCRIPTION_ACTIVATION_PAYMENT_CONFIRMED = "subscription_activation_payment_confirmed"
+    SUBSCRIPTION_ACTIVATED = "subscription_activated"
+
     # Admin actions
     PLAN_CREATED = "plan_created"
     PLAN_UPDATED = "plan_updated"

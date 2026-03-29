@@ -94,11 +94,14 @@ class SubscriptionResponse(BaseModel):
     deposit_day_of_month: int = Field(
         ..., description="Day of month for deposits"
     )
-    next_due_date: str = Field(..., description="Next due date (ISO format)")
+    next_due_date: Optional[str] = Field(None, description="Next due date (ISO format), null for inactive subscriptions")
     has_overdue_deposit: bool = Field(
         ..., description="Whether subscription has an overdue deposit"
     )
     status: str = Field(..., description="Subscription status")
+    covers_activation_fees: bool = Field(
+        False, description="Whether activation fees were paid via one-time activation payment"
+    )
     created_at: str = Field(..., description="Creation date (ISO format)")
     accumulated_cents: int = Field(..., description="Total amount deposited so far in cents")
     deposits_paid: int = Field(..., description="Number of installments paid so far")
@@ -192,3 +195,26 @@ class DashboardDueStatusResponse(BaseModel):
     due_today_plans: List[DuePlanInfoResponse] = Field(
         default_factory=list, description="Subscriptions due today"
     )
+
+
+class ActivationPaymentResponse(BaseModel):
+    """Response schema for a subscription activation payment.
+
+    The one-time Pix payment covering admin tax + insurance before a subscription
+    can be activated. The Pix transaction fee (0.99%) is added on top.
+    """
+
+    id: str = Field(..., description="Payment UUID")
+    user_id: str = Field(..., description="User UUID")
+    subscription_id: str = Field(..., description="Subscription UUID")
+    status: str = Field(..., description="Payment status: pending/confirmed/failed/expired/cancelled")
+    admin_tax_cents: int = Field(..., description="Admin tax component in cents")
+    insurance_cents: int = Field(..., description="Insurance component in cents")
+    pix_transaction_fee_cents: int = Field(..., description="Pix transaction fee (0.99%) in cents")
+    total_amount_cents: int = Field(..., description="Total amount to pay (base + fee) in cents")
+    pix_qr_code_data: Optional[str] = Field(None, description="Pix QR code payload for copying")
+    pix_transaction_id: Optional[str] = Field(None, description="Pix transaction ID from gateway")
+    expiration_minutes: int = Field(..., description="QR code expiration in minutes")
+    created_at: str = Field(..., description="Creation date (ISO format)")
+    updated_at: str = Field(..., description="Last update date (ISO format)")
+    confirmed_at: Optional[str] = Field(None, description="Confirmation date (ISO format)")

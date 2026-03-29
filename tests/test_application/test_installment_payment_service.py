@@ -31,6 +31,7 @@ from app.domain.entities.subscription import (
 )
 from app.domain.entities.user import User, UserRole, UserStatus
 from app.domain.entities.wallet import Wallet
+from app.domain.constants import calculate_pix_fee
 from app.domain.exceptions import (
     DuplicatePaymentError,
     InvalidPaymentError,
@@ -111,7 +112,11 @@ async def _create_subscription(
     deposits_paid: int = 0,
     status: SubscriptionStatus = SubscriptionStatus.ACTIVE,
 ) -> UserPlanSubscription:
-    """Create and persist a test subscription."""
+    """Create and persist a test subscription.
+
+    Subscriptions start INACTIVE; activate() is called when the desired status
+    is ACTIVE (or the status is set directly for other terminal states).
+    """
     repo = SubscriptionRepository(session)
     sub = UserPlanSubscription.create(
         user_id=user_id,
@@ -125,14 +130,19 @@ async def _create_subscription(
         total_cost_cents=10_000,
         name=name,
         deposit_day_of_month=1,
-        today_local=date.today(),
     )
-    # Adjust deposits_paid & status if needed
-    sub.deposits_paid = deposits_paid
-    if status == SubscriptionStatus.COMPLETED:
+    # Activate or set the desired status
+    if status == SubscriptionStatus.ACTIVE:
+        sub.activate(deposit_day_of_month=1, today_local=date.today())
+    elif status == SubscriptionStatus.COMPLETED:
+        sub.activate(deposit_day_of_month=1, today_local=date.today())
+        sub.deposits_paid = deposit_count
         sub.status = SubscriptionStatus.COMPLETED
     elif status == SubscriptionStatus.CANCELLED:
         sub.status = SubscriptionStatus.CANCELLED
+    # Adjust deposits_paid if needed (for partially-paid subs)
+    if deposits_paid and status == SubscriptionStatus.ACTIVE:
+        sub.deposits_paid = deposits_paid
     return await repo.save(sub)
 
 
@@ -238,7 +248,7 @@ class TestCreatePayment:
         )
 
         assert dto.status == "pending"
-        assert dto.total_amount_cents == 50_000
+        assert dto.total_amount_cents == 50_000 + calculate_pix_fee(50_000)
         assert dto.pix_qr_code_data is not None
         assert len(dto.items) == 1
         assert dto.items[0].subscription_id == sub.id
@@ -266,7 +276,7 @@ class TestCreatePayment:
             )
         )
 
-        assert dto.total_amount_cents == 50_000
+        assert dto.total_amount_cents == 50_000 + calculate_pix_fee(50_000)
         assert len(dto.items) == 2
 
     @pytest.mark.asyncio

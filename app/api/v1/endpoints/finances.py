@@ -520,6 +520,7 @@ def _payment_dto_to_response(dto) -> InstallmentPaymentResponse:
             )
             for item in dto.items
         ],
+        pix_transaction_fee_cents=dto.pix_transaction_fee_cents,
         created_at=dto.created_at.isoformat(),
         updated_at=dto.updated_at.isoformat(),
         confirmed_at=dto.confirmed_at.isoformat() if dto.confirmed_at else None,

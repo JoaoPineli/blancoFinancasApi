@@ -197,7 +197,7 @@ class ContractPdfGenerator:
                 <td>{total_formatted}</td>
             </tr>
             <tr>
-                <td>Fundo Garantidor</td>
+                <td>Fundo de proteção</td>
                 <td>{plan.fundo_garantidor_percentage}%</td>
             </tr>
         </table>
@@ -208,7 +208,7 @@ class ContractPdfGenerator:
         <p>{plan.description}</p>
         <p>O CONTRATANTE declara ter lido e concordado com todos os termos e condições
         estabelecidos neste contrato, incluindo as regras de rendimento baseadas na
-        poupança e a retenção do Fundo Garantidor.</p>
+        poupança e a retenção do Fundo de proteção.</p>
     </div>
 
     <div class="signature">

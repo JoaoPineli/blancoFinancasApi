@@ -22,6 +22,7 @@ ALLOWED_DEPOSIT_DAYS: frozenset[int] = frozenset({1, 5, 10, 15, 20, 25})
 class SubscriptionStatus(Enum):
     """Subscription status enumeration."""
 
+    INACTIVE = "inactive"
     ACTIVE = "active"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
@@ -67,11 +68,16 @@ class UserPlanSubscription:
 
     # Deposit due-date fields
     deposit_day_of_month: int = 1
-    next_due_date: date = field(default_factory=date.today)
+    next_due_date: Optional[date] = None
     has_overdue_deposit: bool = False
     overdue_marked_at: Optional[datetime] = None
 
-    status: SubscriptionStatus = SubscriptionStatus.ACTIVE
+    # Whether the activation fees (admin_tax + insurance) were already paid
+    # via a one-time activation payment. When True, all installments are
+    # treated as "subsequent" (investment + fundo only).
+    covers_activation_fees: bool = False
+
+    status: SubscriptionStatus = SubscriptionStatus.INACTIVE
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
 
@@ -103,6 +109,7 @@ class UserPlanSubscription:
             raise ValueError(
                 f"deposit_day_of_month must be one of {sorted(ALLOWED_DEPOSIT_DAYS)}"
             )
+        # next_due_date can be None for INACTIVE subscriptions
 
     @classmethod
     def create(
@@ -118,9 +125,11 @@ class UserPlanSubscription:
         total_cost_cents: int,
         name: str = "",
         deposit_day_of_month: int = 1,
-        today_local: Optional[date] = None,
     ) -> UserPlanSubscription:
         """Factory method to create a new subscription.
+
+        Creates the subscription in INACTIVE status. The subscription must be
+        activated via activate() after the one-time activation payment is confirmed.
 
         Args:
             user_id: UUID of the subscribing user.
@@ -134,19 +143,14 @@ class UserPlanSubscription:
             total_cost_cents: Pre-calculated total fees/taxes in cents.
             name: Cosmetic user-given name for this subscription.
             deposit_day_of_month: Fixed day-of-month for deposits.
-            today_local: Current date in user timezone for computing next_due_date.
 
         Returns:
-            A new UserPlanSubscription in ACTIVE status.
+            A new UserPlanSubscription in INACTIVE status.
 
         Raises:
             ValueError: If any invariant is violated.
         """
-        from app.domain.services.due_date_service import DueDateService
-
         now = datetime.utcnow()
-        ref_date = today_local or date.today()
-        next_due = DueDateService.compute_next_due_date(deposit_day_of_month, ref_date)
 
         return cls(
             id=uuid4(),
@@ -162,13 +166,43 @@ class UserPlanSubscription:
             total_cost_cents=total_cost_cents,
             deposits_paid=0,
             deposit_day_of_month=deposit_day_of_month,
-            next_due_date=next_due,
+            next_due_date=None,
             has_overdue_deposit=False,
             overdue_marked_at=None,
-            status=SubscriptionStatus.ACTIVE,
+            covers_activation_fees=True,
+            status=SubscriptionStatus.INACTIVE,
             created_at=now,
             updated_at=now,
         )
+
+    # ------------------------------------------------------------------
+    # Activation
+    # ------------------------------------------------------------------
+
+    def activate(self, deposit_day_of_month: int, today_local: date) -> None:
+        """Activate the subscription after payment of the activation fee.
+
+        Computes the first next_due_date and transitions status to ACTIVE.
+
+        Args:
+            deposit_day_of_month: Day of month for monthly deposits.
+            today_local: Current calendar date in user timezone.
+
+        Raises:
+            ValueError: If subscription is not INACTIVE.
+        """
+        from app.domain.services.due_date_service import DueDateService
+
+        if self.status != SubscriptionStatus.INACTIVE:
+            raise ValueError(
+                f"Cannot activate subscription in status {self.status.value}"
+            )
+        self.deposit_day_of_month = deposit_day_of_month
+        self.next_due_date = DueDateService.compute_next_due_date(
+            deposit_day_of_month, today_local
+        )
+        self.status = SubscriptionStatus.ACTIVE
+        self.updated_at = datetime.utcnow()
 
     # ------------------------------------------------------------------
     # Deposit due-date mutation methods
@@ -272,9 +306,9 @@ class UserPlanSubscription:
         """Cancel the subscription.
 
         Raises:
-            ValueError: If subscription is not active.
+            ValueError: If subscription is not active or inactive.
         """
-        if self.status != SubscriptionStatus.ACTIVE:
+        if self.status not in (SubscriptionStatus.ACTIVE, SubscriptionStatus.INACTIVE):
             raise ValueError(
                 f"Cannot cancel subscription in status {self.status.value}"
             )

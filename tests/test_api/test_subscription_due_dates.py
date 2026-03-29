@@ -114,8 +114,9 @@ async def _create_subscription(
         guarantee_fund_percent=Decimal("1.0"),
         total_cost_cents=200_00,
         deposit_day_of_month=deposit_day,
-        today_local=date(2026, 1, 1),  # arbitrary ref for create
     )
+    # Activate subscription (subscriptions start INACTIVE now)
+    sub.activate(deposit_day_of_month=deposit_day, today_local=date(2026, 1, 1))
     # Override for test scenario
     if next_due is not None:
         sub.next_due_date = next_due
@@ -138,7 +139,7 @@ class TestSubscriptionEntity:
     """Test entity-level due-date behaviour."""
 
     def test_create_sets_next_due_date(self):
-        """Creating a subscription computes next_due_date from today_local."""
+        """Creating a subscription produces INACTIVE status; activate() computes next_due_date."""
         sub = UserPlanSubscription.create(
             user_id=uuid4(),
             plan_id=uuid4(),
@@ -150,9 +151,12 @@ class TestSubscriptionEntity:
             guarantee_fund_percent=Decimal("1.0"),
             total_cost_cents=200_00,
             deposit_day_of_month=15,
-            today_local=date(2026, 3, 10),
         )
         assert sub.deposit_day_of_month == 15
+        # Created as INACTIVE — next_due_date is None until activation
+        assert sub.next_due_date is None
+        # Activate the subscription
+        sub.activate(deposit_day_of_month=15, today_local=date(2026, 3, 10))
         assert sub.next_due_date == date(2026, 3, 15)
 
     def test_create_invalid_deposit_day_raises(self):
@@ -224,8 +228,8 @@ class TestSubscriptionEntity:
             guarantee_fund_percent=Decimal("1.0"),
             total_cost_cents=200_00,
             deposit_day_of_month=10,
-            today_local=date(2026, 3, 5),
         )
+        sub.activate(deposit_day_of_month=10, today_local=date(2026, 3, 5))
         assert sub.next_due_date == date(2026, 3, 10)
         sub.mark_overdue()
         sub.clear_overdue_and_advance(date(2026, 3, 15))
@@ -247,8 +251,8 @@ class TestSubscriptionEntity:
             guarantee_fund_percent=Decimal("1.0"),
             total_cost_cents=200_00,
             deposit_day_of_month=10,
-            today_local=date(2026, 3, 15),
         )
+        sub.activate(deposit_day_of_month=10, today_local=date(2026, 3, 15))
         # day 10 already passed on March 15 -> next is April 10
         assert sub.next_due_date == date(2026, 4, 10)
 
@@ -304,7 +308,7 @@ class TestCreateSubscriptionWithDepositDay:
         assert response.status_code == 201
         data = response.json()
         assert data["deposit_day_of_month"] == 15
-        assert data["next_due_date"] is not None
+        assert data["next_due_date"] is None  # INACTIVE on creation; set after activation payment
         assert data["has_overdue_deposit"] is False
 
     @pytest.mark.asyncio

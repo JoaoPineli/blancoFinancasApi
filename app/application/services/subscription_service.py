@@ -233,7 +233,7 @@ class SubscriptionService:
             monthly_amount_cents=input_data.monthly_amount_cents,
         )
 
-        # Create domain entity with fee snapshots
+        # Create domain entity with fee snapshots (starts as INACTIVE)
         subscription = UserPlanSubscription.create(
             user_id=input_data.user_id,
             plan_id=input_data.plan_id,
@@ -246,7 +246,6 @@ class SubscriptionService:
             total_cost_cents=cost.total_cost_cents,
             name=input_data.name,
             deposit_day_of_month=input_data.deposit_day_of_month,
-            today_local=self._today_local(),
         )
 
         # Persist
@@ -298,8 +297,9 @@ class SubscriptionService:
             guarantee_fund_percent=subscription.guarantee_fund_percent,
             total_cost_cents=subscription.total_cost_cents,
             deposit_day_of_month=subscription.deposit_day_of_month,
-            next_due_date=subscription.next_due_date.isoformat(),
+            next_due_date=subscription.next_due_date.isoformat() if subscription.next_due_date else None,
             has_overdue_deposit=subscription.has_overdue_deposit,
+            covers_activation_fees=subscription.covers_activation_fees,
             status=subscription.status.value,
             created_at=subscription.created_at.isoformat(),
             accumulated_cents=subscription.total_deposited_cents,

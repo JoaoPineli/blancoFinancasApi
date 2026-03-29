@@ -156,7 +156,7 @@ class TestSubscriptionCreationAuthorization:
         data = response.json()
         assert data["user_id"] == str(user.id)
         assert data["plan_id"] == str(plan.id)
-        assert data["status"] == "active"
+        assert data["status"] == "inactive"
 
     @pytest.mark.asyncio
     async def test_create_subscription_invalid_plan_returns_404(

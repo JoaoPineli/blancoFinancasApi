@@ -143,6 +143,7 @@ class InstallmentPaymentDTO:
     created_at: datetime
     updated_at: datetime
     confirmed_at: Optional[datetime]
+    pix_transaction_fee_cents: int = 0
 
 
 # ------------------------------------------------------------------

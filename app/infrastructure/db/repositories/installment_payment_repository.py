@@ -183,6 +183,7 @@ class InstallmentPaymentRepository:
             created_at=model.created_at,
             updated_at=model.updated_at,
             confirmed_at=model.confirmed_at,
+            pix_transaction_fee_cents=model.pix_transaction_fee_cents,
         )
 
     def _to_model(self, entity: InstallmentPayment) -> InstallmentPaymentModel:
@@ -195,6 +196,7 @@ class InstallmentPaymentRepository:
             pix_qr_code_data=entity.pix_qr_code_data,
             pix_transaction_id=entity.pix_transaction_id,
             expiration_minutes=entity.expiration_minutes,
+            pix_transaction_fee_cents=entity.pix_transaction_fee_cents,
             created_at=entity.created_at,
             updated_at=entity.updated_at,
             confirmed_at=entity.confirmed_at,

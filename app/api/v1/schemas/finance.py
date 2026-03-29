@@ -14,7 +14,7 @@ class WalletResponse(BaseModel):
     balance_cents: int = Field(..., description="Available balance in cents")
     total_invested_cents: int = Field(..., description="Total invested in cents")
     total_yield_cents: int = Field(..., description="Total yield earned in cents")
-    fundo_garantidor_cents: int = Field(..., description="Fundo Garantidor in cents")
+    fundo_garantidor_cents: int = Field(..., description="Fundo de proteção acumulado em centavos")
 
 
 class TransactionResponse(BaseModel):
@@ -155,6 +155,7 @@ class InstallmentPaymentResponse(BaseModel):
     items: list[InstallmentPaymentItemResponse] = Field(
         ..., description="Payment items"
     )
+    pix_transaction_fee_cents: int = Field(0, description="Pix transaction fee (0.99%) in cents")
     created_at: str = Field(..., description="Creation date (ISO format)")
     updated_at: str = Field(..., description="Last update date (ISO format)")
     confirmed_at: Optional[str] = Field(None, description="Confirmation date (ISO format)")

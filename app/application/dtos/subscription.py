@@ -73,8 +73,9 @@ class SubscriptionResult:
     guarantee_fund_percent: Decimal
     total_cost_cents: int
     deposit_day_of_month: int
-    next_due_date: str  # ISO date string
+    next_due_date: Optional[str]  # ISO date string; None when subscription is INACTIVE
     has_overdue_deposit: bool
+    covers_activation_fees: bool
     status: str
     created_at: str  # ISO format string
     accumulated_cents: int

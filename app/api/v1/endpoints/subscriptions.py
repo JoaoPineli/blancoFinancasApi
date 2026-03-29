@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, status
 
 from app.api.v1.dependencies import CurrentUser, DbSession
 from app.api.v1.schemas.subscription import (
+    ActivationPaymentResponse,
     CalculateCostRequest,
     CostResponse,
     CreateSubscriptionRequest,
@@ -25,10 +26,15 @@ from app.application.dtos.subscription import (
     UpdateDepositDayInput,
     UpdateNameInput,
 )
+from app.application.dtos.subscription_activation_payment import CreateActivationPaymentInput
+from app.application.services.subscription_activation_payment_service import (
+    SubscriptionActivationPaymentService,
+)
 from app.application.services.subscription_service import SubscriptionService
 from app.domain.exceptions import (
     InvalidSubscriptionError,
     NoViablePlanError,
+    PaymentNotFoundError,
     PlanNotFoundError,
     SubscriptionNotFoundError,
 )
@@ -412,4 +418,96 @@ async def get_dashboard_due_status(
             )
             for p in result.due_today_plans
         ],
+    )
+
+
+# ------------------------------------------------------------------
+# Subscription Activation Payment endpoints
+# ------------------------------------------------------------------
+
+
+@router.post(
+    "/{subscription_id}/activation-payment",
+    response_model=ActivationPaymentResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Create or get pending activation payment",
+)
+async def create_activation_payment(
+    subscription_id: str,
+    session: DbSession,
+    current_user: CurrentUser,
+) -> ActivationPaymentResponse:
+    """Create or return the existing pending activation payment for a subscription.
+
+    This endpoint is idempotent: calling it multiple times returns the same
+    pending payment rather than creating duplicates.
+
+    The response includes the Pix QR code to pay the one-time activation fee
+    (admin tax + insurance + 0.99% Pix transaction fee).
+    """
+    service = SubscriptionActivationPaymentService(session)
+    try:
+        result = await service.create_or_get_pending(
+            CreateActivationPaymentInput(
+                user_id=current_user.id,
+                subscription_id=UUID(subscription_id),
+            )
+        )
+        return _activation_payment_to_response(result)
+    except SubscriptionNotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
+    except InvalidSubscriptionError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.message)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get(
+    "/{subscription_id}/activation-payment",
+    response_model=ActivationPaymentResponse,
+    summary="Get current activation payment",
+)
+async def get_activation_payment(
+    subscription_id: str,
+    session: DbSession,
+    current_user: CurrentUser,
+) -> ActivationPaymentResponse:
+    """Get the pending or latest activation payment for a subscription."""
+    service = SubscriptionActivationPaymentService(session)
+    try:
+        result = await service.get_payment_for_subscription(
+            subscription_id=UUID(subscription_id),
+            user_id=current_user.id,
+        )
+        return _activation_payment_to_response(result)
+    except SubscriptionNotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
+    except PaymentNotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+# ------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------
+
+
+def _activation_payment_to_response(dto) -> ActivationPaymentResponse:
+    """Convert ActivationPaymentDTO to response schema."""
+    return ActivationPaymentResponse(
+        id=str(dto.id),
+        user_id=str(dto.user_id),
+        subscription_id=str(dto.subscription_id),
+        status=dto.status,
+        admin_tax_cents=dto.admin_tax_cents,
+        insurance_cents=dto.insurance_cents,
+        pix_transaction_fee_cents=dto.pix_transaction_fee_cents,
+        total_amount_cents=dto.total_amount_cents,
+        pix_qr_code_data=dto.pix_qr_code_data,
+        pix_transaction_id=dto.pix_transaction_id,
+        expiration_minutes=dto.expiration_minutes,
+        created_at=dto.created_at.isoformat(),
+        updated_at=dto.updated_at.isoformat(),
+        confirmed_at=dto.confirmed_at.isoformat() if dto.confirmed_at else None,
     )

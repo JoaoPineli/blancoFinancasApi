@@ -108,8 +108,9 @@ async def _create_subscription(
         total_cost_cents=10_000,
         name="Minha Poupança",
         deposit_day_of_month=1,
-        today_local=date.today(),
     )
+    # Activate first so status can be ACTIVE or CANCELLED/COMPLETED
+    sub.activate(deposit_day_of_month=1, today_local=date.today())
     sub.deposits_paid = deposits_paid
     sub.status = status
     return await repo.save(sub)

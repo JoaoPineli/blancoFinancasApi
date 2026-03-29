@@ -229,11 +229,14 @@ class UserPlanSubscriptionModel(Base):
 
     # Deposit due-date fields
     deposit_day_of_month: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    next_due_date: Mapped[date] = mapped_column(Date, nullable=False)
+    next_due_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     has_overdue_deposit: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     overdue_marked_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+    # Whether activation fees (admin_tax + insurance) were paid via activation payment
+    covers_activation_fees: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
@@ -372,6 +375,7 @@ class InstallmentPaymentModel(Base):
         String(100), nullable=True, unique=True, index=True
     )
     expiration_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    pix_transaction_fee_cents: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
@@ -441,4 +445,30 @@ class NotificationModel(Base):
         Index("ix_notifications_notification_type", "notification_type"),
         Index("ix_notifications_is_read", "is_read"),
         Index("ix_notifications_created_at", "created_at"),
+    )
+
+
+class SubscriptionActivationPaymentModel(Base):
+    """SQLAlchemy model for subscription activation payments."""
+
+    __tablename__ = "subscription_activation_payments"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    subscription_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("user_plan_subscriptions.id"), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
+    admin_tax_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    insurance_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    pix_transaction_fee_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    total_amount_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    pix_qr_code_data: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    pix_transaction_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, unique=True, index=True)
+    expiration_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("ix_subscription_activation_payments_user_status", "user_id", "status"),
+        Index("ix_subscription_activation_payments_sub_id", "subscription_id"),
     )

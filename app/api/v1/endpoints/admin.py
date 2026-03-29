@@ -536,6 +536,47 @@ async def admin_confirm_installment_payment(
 
 
 @router.post(
+    "/activation-payments/{payment_id}/confirm",
+    status_code=status.HTTP_200_OK,
+    summary="Manually confirm a subscription activation payment (testing)",
+)
+async def admin_confirm_activation_payment(
+    payment_id: str,
+    session: DbSession,
+    current_admin: CurrentAdmin,
+) -> dict:
+    """Manually confirm a subscription activation payment.
+
+    Admin-only endpoint for testing purposes. Simulates a successful
+    Pix confirmation for an activation payment, activating the subscription.
+    """
+    from app.application.services.subscription_activation_payment_service import (
+        SubscriptionActivationPaymentService,
+    )
+    from app.domain.exceptions import PaymentNotFoundError
+
+    service = SubscriptionActivationPaymentService(session)
+
+    try:
+        pix_tx_id = f"admin-manual-{payment_id[:8]}"
+        result = await service.confirm_payment(
+            payment_id=UUID(payment_id),
+            pix_transaction_id=pix_tx_id,
+        )
+        return {
+            "status": result.status,
+            "payment_id": str(result.id),
+            "subscription_id": str(result.subscription_id),
+            "total_amount_cents": result.total_amount_cents,
+        }
+    except PaymentNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Activation payment {payment_id} not found",
+        )
+
+
+@router.post(
     "/webhooks/pix",
     status_code=status.HTTP_200_OK,
     summary="Pix payment webhook",
@@ -595,7 +636,39 @@ async def pix_webhook(
             }
         return {"status": "ignored", "pix_status": payload.status}
 
-    # 3. Unknown payment
+    # 3. Try subscription activation payment reconciliation
+    from app.application.services.subscription_activation_payment_service import (
+        SubscriptionActivationPaymentService,
+    )
+    from app.infrastructure.db.repositories.subscription_activation_payment_repository import (
+        SubscriptionActivationPaymentRepository,
+    )
+
+    activation_payment_repo = SubscriptionActivationPaymentRepository(session)
+    activation_payment = await activation_payment_repo.get_by_pix_transaction_id(payload.pix_id)
+
+    if activation_payment:
+        if payload.status == "confirmed":
+            activation_service = SubscriptionActivationPaymentService(session)
+            await activation_service.confirm_payment(
+                payment_id=activation_payment.id,
+                pix_transaction_id=payload.pix_id,
+            )
+            return {
+                "status": "confirmed",
+                "activation_payment_id": str(activation_payment.id),
+            }
+        elif payload.status == "failed":
+            activation_payment.fail()
+            await activation_payment_repo.save(activation_payment)
+            await session.commit()
+            return {
+                "status": "failed",
+                "activation_payment_id": str(activation_payment.id),
+            }
+        return {"status": "ignored", "pix_status": payload.status}
+
+    # 4. Unknown payment
     return {"status": "unknown_transaction", "pix_id": payload.pix_id}
 
 
