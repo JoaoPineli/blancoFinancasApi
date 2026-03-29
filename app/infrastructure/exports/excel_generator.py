@@ -130,6 +130,197 @@ class ExcelReportGenerator:
         buffer.seek(0)
         return buffer
 
+    def generate_clients_report(
+        self,
+        clients: List[Dict[str, Any]],
+        start_date: datetime,
+        end_date: datetime,
+    ) -> BytesIO:
+        """Generate clients report.
+
+        Args:
+            clients: List of client dicts with integer centavos fields.
+            start_date: Report start date.
+            end_date: Report end date.
+
+        Returns:
+            BytesIO buffer with Excel file.
+        """
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Clientes"
+
+        ws.merge_cells("A1:J1")
+        ws["A1"] = (
+            f"Relatório de Clientes"
+            f" - {start_date.strftime('%d/%m/%Y')} a {end_date.strftime('%d/%m/%Y')}"
+        )
+        ws["A1"].font = Font(bold=True, size=14)
+        ws["A1"].alignment = Alignment(horizontal="center")
+
+        headers = [
+            "Nome", "Email", "CPF", "Telefone", "Status",
+            "Saldo (centavos)", "Total Investido (centavos)",
+            "Rendimento Total (centavos)", "Fundo Garantidor (centavos)",
+            "Criado em",
+        ]
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=3, column=col, value=header)
+            cell.font = self._header_font
+            cell.fill = self._header_fill
+            cell.border = self._border
+            cell.alignment = Alignment(horizontal="center")
+
+        for row_idx, c in enumerate(clients, start=4):
+            ws.cell(row=row_idx, column=1, value=c["name"])
+            ws.cell(row=row_idx, column=2, value=c["email"])
+            ws.cell(row=row_idx, column=3, value=c.get("cpf", ""))
+            ws.cell(row=row_idx, column=4, value=c.get("phone", ""))
+            ws.cell(row=row_idx, column=5, value=c["status"])
+            # Store centavos as integers — no float
+            ws.cell(row=row_idx, column=6, value=c.get("balance_cents", 0))
+            ws.cell(row=row_idx, column=7, value=c.get("total_invested_cents", 0))
+            ws.cell(row=row_idx, column=8, value=c.get("total_yield_cents", 0))
+            ws.cell(row=row_idx, column=9, value=c.get("fundo_garantidor_cents", 0))
+            ws.cell(row=row_idx, column=10, value=c["created_at"])
+            for col in range(1, 11):
+                ws.cell(row=row_idx, column=col).border = self._border
+
+        column_widths = [30, 35, 14, 14, 12, 20, 25, 25, 25, 18]
+        for col, width in enumerate(column_widths, 1):
+            ws.column_dimensions[get_column_letter(col)].width = width
+
+        buffer = BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+        return buffer
+
+    def generate_transactions_report(
+        self,
+        transactions: List[Dict[str, Any]],
+        start_date: datetime,
+        end_date: datetime,
+    ) -> BytesIO:
+        """Generate transactions report.
+
+        Args:
+            transactions: List of transaction dicts.
+            start_date: Report start date.
+            end_date: Report end date.
+
+        Returns:
+            BytesIO buffer with Excel file.
+        """
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Transações"
+
+        ws.merge_cells("A1:I1")
+        ws["A1"] = (
+            f"Relatório de Transações"
+            f" - {start_date.strftime('%d/%m/%Y')} a {end_date.strftime('%d/%m/%Y')}"
+        )
+        ws["A1"].font = Font(bold=True, size=14)
+        ws["A1"].alignment = Alignment(horizontal="center")
+
+        headers = [
+            "ID", "Cliente", "Data", "Confirmado em",
+            "Tipo", "Status", "Valor (centavos)", "ID Pix", "Descrição",
+        ]
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=3, column=col, value=header)
+            cell.font = self._header_font
+            cell.fill = self._header_fill
+            cell.border = self._border
+            cell.alignment = Alignment(horizontal="center")
+
+        for row_idx, t in enumerate(transactions, start=4):
+            ws.cell(row=row_idx, column=1, value=str(t["id"]))
+            ws.cell(row=row_idx, column=2, value=t["client_name"])
+            ws.cell(row=row_idx, column=3, value=t["created_at"]).number_format = self._datetime_format
+            confirmed = t.get("confirmed_at")
+            ws.cell(row=row_idx, column=4, value=confirmed if confirmed else "").number_format = self._datetime_format
+            ws.cell(row=row_idx, column=5, value=t["transaction_type"])
+            ws.cell(row=row_idx, column=6, value=t["status"])
+            ws.cell(row=row_idx, column=7, value=t["amount_cents"])  # integer centavos
+            ws.cell(row=row_idx, column=8, value=t.get("pix_transaction_id", ""))
+            ws.cell(row=row_idx, column=9, value=t.get("description", ""))
+            for col in range(1, 10):
+                ws.cell(row=row_idx, column=col).border = self._border
+
+        column_widths = [36, 30, 18, 18, 16, 12, 20, 28, 40]
+        for col, width in enumerate(column_widths, 1):
+            ws.column_dimensions[get_column_letter(col)].width = width
+
+        buffer = BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+        return buffer
+
+    def generate_yields_report(
+        self,
+        yields: List[Dict[str, Any]],
+        start_date: datetime,
+        end_date: datetime,
+    ) -> BytesIO:
+        """Generate yields report based on AuditLog YIELD_CREDITED entries.
+
+        Args:
+            yields: List of yield dicts derived from AuditLog details.
+            start_date: Report start date.
+            end_date: Report end date.
+
+        Returns:
+            BytesIO buffer with Excel file.
+        """
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Rendimentos"
+
+        ws.merge_cells("A1:K1")
+        ws["A1"] = (
+            f"Relatório de Rendimentos"
+            f" - {start_date.strftime('%d/%m/%Y')} a {end_date.strftime('%d/%m/%Y')}"
+        )
+        ws["A1"].font = Font(bold=True, size=14)
+        ws["A1"].alignment = Alignment(horizontal="center")
+
+        headers = [
+            "Usuário", "Série SGS", "Período De", "Período Até",
+            "Taxa Efetiva", "Principal (centavos)", "Rendimento (centavos)",
+            "Nº Parcela", "ID Assinatura", "ID Depósito Principal", "Data",
+        ]
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=3, column=col, value=header)
+            cell.font = self._header_font
+            cell.fill = self._header_fill
+            cell.border = self._border
+            cell.alignment = Alignment(horizontal="center")
+
+        for row_idx, y in enumerate(yields, start=4):
+            ws.cell(row=row_idx, column=1, value=y["user_name"])
+            ws.cell(row=row_idx, column=2, value=y["sgs_series_id"])
+            ws.cell(row=row_idx, column=3, value=y["yield_period_from"])
+            ws.cell(row=row_idx, column=4, value=y["yield_period_to"])
+            ws.cell(row=row_idx, column=5, value=str(y["effective_rate"]))
+            ws.cell(row=row_idx, column=6, value=y["principal_cents"])  # integer centavos
+            ws.cell(row=row_idx, column=7, value=y["yield_cents"])      # integer centavos
+            ws.cell(row=row_idx, column=8, value=y["installment_number"])
+            ws.cell(row=row_idx, column=9, value=str(y["subscription_id"]))
+            ws.cell(row=row_idx, column=10, value=str(y["principal_deposit_id"]))
+            ws.cell(row=row_idx, column=11, value=y["created_at"]).number_format = self._datetime_format
+            for col in range(1, 12):
+                ws.cell(row=row_idx, column=col).border = self._border
+
+        column_widths = [30, 12, 12, 12, 20, 22, 22, 12, 36, 36, 18]
+        for col, width in enumerate(column_widths, 1):
+            ws.column_dimensions[get_column_letter(col)].width = width
+
+        buffer = BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+        return buffer
+
     def generate_reconciliation_report(
         self,
         transactions: List[Dict[str, Any]],

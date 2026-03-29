@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from io import BytesIO
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -18,6 +18,10 @@ from app.api.v1.schemas.user import (
     UserStatusRequest,
 )
 from app.api.v1.schemas.finance import (
+    AdminCashFlowEntryResponse,
+    AdminCashFlowListResponse,
+    AdminFinanceSummaryResponse,
+    AdminReconciliationSummaryResponse,
     AdminWithdrawalListResponse,
     AdminWithdrawalResponse,
     ApproveWithdrawalRequest,
@@ -64,7 +68,9 @@ from app.infrastructure.db.repositories.installment_payment_repository import (
 )
 from app.infrastructure.db.repositories.user_repository import UserRepository
 from app.infrastructure.db.repositories.transaction_repository import TransactionRepository
+from app.infrastructure.exports.csv_generator import CsvReportGenerator
 from app.infrastructure.exports.excel_generator import ExcelReportGenerator
+from app.infrastructure.exports.pdf_report_generator import PdfReportGenerator
 
 router = APIRouter()
 
@@ -672,6 +678,357 @@ async def pix_webhook(
     return {"status": "unknown_transaction", "pix_id": payload.pix_id}
 
 
+# ============================================================================
+# Finance API Endpoints (Admin Only) — JSON responses
+# ============================================================================
+
+
+@router.get(
+    "/finance/summary",
+    response_model=AdminFinanceSummaryResponse,
+    summary="Finance summary for a period",
+)
+async def get_finance_summary(
+    session: DbSession,
+    current_admin: CurrentAdmin,
+    start_date: str = Query(..., description="Period start (YYYY-MM-DD)"),
+    end_date: str = Query(..., description="Period end (YYYY-MM-DD)"),
+    category: Optional[str] = Query(None, description="Filter: deposit|withdrawal|yield|fee|fundo_garantidor|activation"),
+    flow_type: Optional[str] = Query(None, description="Filter by flow direction (inflow|outflow)"),
+) -> AdminFinanceSummaryResponse:
+    """Return fundo de proteção total + inflow/outflow/net for the given period.
+
+    Data sources:
+    - TransactionModel: DEPOSIT (old flow), WITHDRAWAL, YIELD, FEE, FUNDO_GARANTIDOR.
+    - InstallmentPaymentModel: subscription installment payments (new flow → Depósito / inflow).
+    - SubscriptionActivationPaymentModel: activation fees (Taxa de Ativação / inflow).
+
+    fundo_garantidor_cents is always the full wallet sum, never filtered.
+    """
+    from sqlalchemy import func, select
+    from app.domain.entities.transaction import TransactionStatus, TransactionType
+    from app.infrastructure.db.models import (
+        InstallmentPaymentModel,
+        SubscriptionActivationPaymentModel,
+        TransactionModel,
+        WalletModel,
+    )
+
+    start = datetime.strptime(start_date, "%Y-%m-%d")
+    end = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+
+    _TX_INFLOW = {TransactionType.DEPOSIT.value, TransactionType.YIELD.value}
+    _TX_OUTFLOW = {TransactionType.WITHDRAWAL.value, TransactionType.FEE.value, TransactionType.FUNDO_GARANTIDOR.value}
+    _TX_ALL = _TX_INFLOW | _TX_OUTFLOW
+
+    # Resolve TransactionModel types to include
+    tx_applicable = _TX_ALL.copy()
+    if category == "activation":
+        tx_applicable = set()  # activation payments are in a separate table
+    elif category and category in _TX_ALL:
+        tx_applicable = {category}
+    if flow_type == "inflow":
+        tx_applicable &= _TX_INFLOW
+    elif flow_type == "outflow":
+        tx_applicable &= _TX_OUTFLOW
+
+    # Whether to include InstallmentPayments and ActivationPayments
+    include_ip = (not category or category == "deposit") and (not flow_type or flow_type == "inflow")
+    include_ap = (not category or category == "activation") and (not flow_type or flow_type == "inflow")
+
+    # Fundo de proteção — always unfiltered wallet total
+    fg_result = await session.execute(
+        select(func.coalesce(func.sum(WalletModel.fundo_garantidor_cents), 0))
+    )
+    fundo_garantidor_cents = int(fg_result.scalar() or 0)
+
+    # TransactionModel inflow
+    tx_inflow_types = list(tx_applicable & _TX_INFLOW)
+    if tx_inflow_types:
+        r = await session.execute(
+            select(func.coalesce(func.sum(TransactionModel.amount_cents), 0))
+            .where(TransactionModel.transaction_type.in_(tx_inflow_types))
+            .where(TransactionModel.status == TransactionStatus.CONFIRMED.value)
+            .where(TransactionModel.created_at >= start)
+            .where(TransactionModel.created_at <= end)
+        )
+        tx_inflow_cents = int(r.scalar() or 0)
+    else:
+        tx_inflow_cents = 0
+
+    # TransactionModel outflow
+    tx_outflow_types = list(tx_applicable & _TX_OUTFLOW)
+    if tx_outflow_types:
+        r = await session.execute(
+            select(func.coalesce(func.sum(TransactionModel.amount_cents), 0))
+            .where(TransactionModel.transaction_type.in_(tx_outflow_types))
+            .where(TransactionModel.status == TransactionStatus.CONFIRMED.value)
+            .where(TransactionModel.created_at >= start)
+            .where(TransactionModel.created_at <= end)
+        )
+        tx_outflow_cents = int(r.scalar() or 0)
+    else:
+        tx_outflow_cents = 0
+
+    # InstallmentPayments inflow (new subscription deposit flow; filter by confirmed_at)
+    ip_inflow_cents = 0
+    if include_ip:
+        r = await session.execute(
+            select(func.coalesce(func.sum(InstallmentPaymentModel.total_amount_cents), 0))
+            .where(InstallmentPaymentModel.status == "confirmed")
+            .where(InstallmentPaymentModel.confirmed_at >= start)
+            .where(InstallmentPaymentModel.confirmed_at <= end)
+        )
+        ip_inflow_cents = int(r.scalar() or 0)
+
+    # ActivationPayments inflow (filter by confirmed_at)
+    ap_inflow_cents = 0
+    if include_ap:
+        r = await session.execute(
+            select(func.coalesce(func.sum(SubscriptionActivationPaymentModel.total_amount_cents), 0))
+            .where(SubscriptionActivationPaymentModel.status == "confirmed")
+            .where(SubscriptionActivationPaymentModel.confirmed_at >= start)
+            .where(SubscriptionActivationPaymentModel.confirmed_at <= end)
+        )
+        ap_inflow_cents = int(r.scalar() or 0)
+
+    total_inflow_cents = tx_inflow_cents + ip_inflow_cents + ap_inflow_cents
+    total_outflow_cents = tx_outflow_cents
+
+    return AdminFinanceSummaryResponse(
+        fundo_garantidor_cents=fundo_garantidor_cents,
+        total_inflow_cents=total_inflow_cents,
+        total_outflow_cents=total_outflow_cents,
+        net_balance_cents=total_inflow_cents - total_outflow_cents,
+        period_start=start_date,
+        period_end=end_date,
+    )
+
+
+@router.get(
+    "/finance/cash-flow",
+    response_model=AdminCashFlowListResponse,
+    summary="Paginated cash flow entries for a period",
+)
+async def get_finance_cash_flow(
+    session: DbSession,
+    current_admin: CurrentAdmin,
+    start_date: str = Query(..., description="Period start (YYYY-MM-DD)"),
+    end_date: str = Query(..., description="Period end (YYYY-MM-DD)"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    category: Optional[str] = Query(None, description="Filter: deposit|withdrawal|yield|fee|fundo_garantidor|activation"),
+    flow_type: Optional[str] = Query(None, description="Filter by flow direction (inflow|outflow)"),
+) -> AdminCashFlowListResponse:
+    """Return paginated confirmed entries for the given period.
+
+    Aggregates three sources:
+    - TransactionModel (DEPOSIT legacy, WITHDRAWAL, YIELD, FEE, FUNDO_GARANTIDOR)
+    - InstallmentPaymentModel (new subscription installment deposits → category Depósito)
+    - SubscriptionActivationPaymentModel (activation fees → category Taxa de Ativação)
+
+    Python-side merge → sort by date → paginate. Fine for admin data volumes.
+    """
+    from sqlalchemy import select
+    from app.domain.entities.transaction import TransactionStatus, TransactionType
+    from app.infrastructure.db.models import (
+        InstallmentPaymentModel,
+        SubscriptionActivationPaymentModel,
+        TransactionModel,
+    )
+
+    _CATEGORY_LABEL = {
+        TransactionType.DEPOSIT.value: "Depósito",
+        TransactionType.WITHDRAWAL.value: "Saque",
+        TransactionType.YIELD.value: "Rendimento",
+        TransactionType.FEE.value: "Taxa",
+        TransactionType.FUNDO_GARANTIDOR.value: "Fundo de proteção",
+    }
+    _TX_INFLOW = {TransactionType.DEPOSIT.value, TransactionType.YIELD.value}
+    _TX_OUTFLOW = {TransactionType.WITHDRAWAL.value, TransactionType.FEE.value, TransactionType.FUNDO_GARANTIDOR.value}
+    _TX_ALL = _TX_INFLOW | _TX_OUTFLOW
+
+    start = datetime.strptime(start_date, "%Y-%m-%d")
+    end = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+
+    # Resolve which sources to query
+    tx_applicable = _TX_ALL.copy()
+    if category == "activation":
+        tx_applicable = set()
+    elif category and category in _TX_ALL:
+        tx_applicable = {category}
+    if flow_type == "inflow":
+        tx_applicable &= _TX_INFLOW
+    elif flow_type == "outflow":
+        tx_applicable &= _TX_OUTFLOW
+
+    include_ip = (not category or category == "deposit") and (not flow_type or flow_type == "inflow")
+    include_ap = (not category or category == "activation") and (not flow_type or flow_type == "inflow")
+
+    all_entries: list[dict] = []
+
+    # 1. TransactionModel entries
+    if tx_applicable:
+        tx_rows = (await session.execute(
+            select(TransactionModel)
+            .where(TransactionModel.status == TransactionStatus.CONFIRMED.value)
+            .where(TransactionModel.created_at >= start)
+            .where(TransactionModel.created_at <= end)
+            .where(TransactionModel.transaction_type.in_(list(tx_applicable)))
+        )).scalars().all()
+
+        for t in tx_rows:
+            all_entries.append({
+                "sort_dt": t.created_at,
+                "id": str(t.id),
+                "date": t.created_at.isoformat(),
+                "description": t.description or _CATEGORY_LABEL.get(t.transaction_type, t.transaction_type),
+                "type": "inflow" if t.transaction_type in _TX_INFLOW else "outflow",
+                "amount_cents": t.amount_cents,
+                "category": _CATEGORY_LABEL.get(t.transaction_type, t.transaction_type),
+            })
+
+    # 2. InstallmentPayments (new subscription deposit flow; date = confirmed_at)
+    if include_ip:
+        ip_rows = (await session.execute(
+            select(InstallmentPaymentModel)
+            .where(InstallmentPaymentModel.status == "confirmed")
+            .where(InstallmentPaymentModel.confirmed_at >= start)
+            .where(InstallmentPaymentModel.confirmed_at <= end)
+        )).scalars().all()
+
+        for ip in ip_rows:
+            dt = ip.confirmed_at or ip.created_at
+            all_entries.append({
+                "sort_dt": dt,
+                "id": str(ip.id),
+                "date": dt.isoformat(),
+                "description": "Pagamento de parcela",
+                "type": "inflow",
+                "amount_cents": ip.total_amount_cents,
+                "category": "Depósito",
+            })
+
+    # 3. ActivationPayments (date = confirmed_at)
+    if include_ap:
+        ap_rows = (await session.execute(
+            select(SubscriptionActivationPaymentModel)
+            .where(SubscriptionActivationPaymentModel.status == "confirmed")
+            .where(SubscriptionActivationPaymentModel.confirmed_at >= start)
+            .where(SubscriptionActivationPaymentModel.confirmed_at <= end)
+        )).scalars().all()
+
+        for ap in ap_rows:
+            dt = ap.confirmed_at or ap.created_at
+            all_entries.append({
+                "sort_dt": dt,
+                "id": str(ap.id),
+                "date": dt.isoformat(),
+                "description": "Taxa de ativação",
+                "type": "inflow",
+                "amount_cents": ap.total_amount_cents,
+                "category": "Taxa de Ativação",
+            })
+
+    # Sort by date descending, then paginate in Python
+    all_entries.sort(key=lambda e: e["sort_dt"], reverse=True)
+    total = len(all_entries)
+    page_entries = all_entries[(page - 1) * page_size: page * page_size]
+
+    return AdminCashFlowListResponse(
+        entries=[
+            AdminCashFlowEntryResponse(
+                id=e["id"],
+                date=e["date"],
+                description=e["description"],
+                type=e["type"],
+                amount_cents=e["amount_cents"],
+                category=e["category"],
+            )
+            for e in page_entries
+        ],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.get(
+    "/finance/reconciliation/summary",
+    response_model=AdminReconciliationSummaryResponse,
+    summary="Reconciliation status counts for deposits",
+)
+async def get_reconciliation_summary(
+    session: DbSession,
+    current_admin: CurrentAdmin,
+) -> AdminReconciliationSummaryResponse:
+    """Return counts of deposit entries grouped by reconciliation status.
+
+    Covers all three deposit sources:
+    - TransactionModel DEPOSIT (old contract flow)
+    - InstallmentPaymentModel (new subscription flow — always conciliado when confirmed via Pix)
+    - SubscriptionActivationPaymentModel (always conciliado when confirmed)
+
+    - conciliado: confirmed with a pix_transaction_id.
+    - divergente: confirmed without a pix_transaction_id (manual/system).
+    - pendente: not yet confirmed (pending/failed/cancelled).
+    """
+    from sqlalchemy import func, select
+    from app.domain.entities.transaction import TransactionStatus, TransactionType
+    from app.infrastructure.db.models import (
+        InstallmentPaymentModel,
+        SubscriptionActivationPaymentModel,
+        TransactionModel,
+    )
+
+    conciliado = pendente = divergente = 0
+
+    # TransactionModel DEPOSIT entries (legacy flow)
+    tx_rows = (await session.execute(
+        select(TransactionModel.status, TransactionModel.pix_transaction_id)
+        .where(TransactionModel.transaction_type == TransactionType.DEPOSIT.value)
+    )).all()
+    for row_status, pix_tx_id in tx_rows:
+        if pix_tx_id:
+            conciliado += 1
+        elif row_status == TransactionStatus.CONFIRMED.value:
+            divergente += 1
+        else:
+            pendente += 1
+
+    # InstallmentPayments — confirmed ones always have pix_transaction_id
+    ip_counts = (await session.execute(
+        select(InstallmentPaymentModel.status, InstallmentPaymentModel.pix_transaction_id)
+    )).all()
+    for ip_status, ip_pix_id in ip_counts:
+        if ip_pix_id and ip_status == "confirmed":
+            conciliado += 1
+        elif ip_status == "confirmed":
+            divergente += 1
+        else:
+            pendente += 1
+
+    # ActivationPayments
+    ap_counts = (await session.execute(
+        select(SubscriptionActivationPaymentModel.status, SubscriptionActivationPaymentModel.pix_transaction_id)
+    )).all()
+    for ap_status, ap_pix_id in ap_counts:
+        if ap_pix_id and ap_status == "confirmed":
+            conciliado += 1
+        elif ap_status == "confirmed":
+            divergente += 1
+        else:
+            pendente += 1
+
+    total = conciliado + pendente + divergente
+    return AdminReconciliationSummaryResponse(
+        conciliado=conciliado,
+        pendente=pendente,
+        divergente=divergente,
+        total=total,
+    )
+
+
 @router.get(
     "/reports/cash-flow",
     summary="Download cash flow report",
@@ -681,19 +1038,18 @@ async def download_cash_flow_report(
     current_admin: CurrentAdmin,
     start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
     end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
+    format: str = Query("xlsx", pattern="^(xlsx|csv|pdf)$", description="Output format"),
 ) -> StreamingResponse:
-    """Generate and download cash flow Excel report.
+    """Generate and download cash flow report (xlsx, csv or pdf).
 
     Admin only endpoint.
     """
     from sqlalchemy import select
     from app.infrastructure.db.models import TransactionModel, UserModel
 
-    # Parse dates
     start = datetime.strptime(start_date, "%Y-%m-%d")
     end = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
 
-    # Query transactions with user info
     result = await session.execute(
         select(TransactionModel, UserModel.name)
         .join(UserModel, TransactionModel.user_id == UserModel.id)
@@ -703,12 +1059,11 @@ async def download_cash_flow_report(
     )
     rows = result.all()
 
-    # Format for report
     transactions = [
         {
             "date": t.created_at,
             "type": t.transaction_type,
-            "user_name": name,
+            "client_name": name,
             "description": t.description or "",
             "amount": t.amount_cents,
             "status": t.status,
@@ -716,15 +1071,245 @@ async def download_cash_flow_report(
         for t, name in rows
     ]
 
-    # Generate Excel
-    generator = ExcelReportGenerator()
-    buffer = generator.generate_cash_flow_report(transactions, start, end)
+    filename_base = f"fluxo_caixa_{start_date}_{end_date}"
 
-    filename = f"fluxo_caixa_{start_date}_{end_date}.xlsx"
+    if format == "csv":
+        csv_gen = CsvReportGenerator()
+        data = csv_gen.generate_cash_flow_report(transactions, start, end)
+        return StreamingResponse(
+            iter([data]),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename_base}.csv"'},
+        )
+
+    if format == "pdf":
+        pdf_gen = PdfReportGenerator()
+        buffer = pdf_gen.generate_cash_flow_report(transactions, start, end)
+        return StreamingResponse(
+            buffer,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename_base}.pdf"'},
+        )
+
+    # Default: xlsx
+    excel_gen = ExcelReportGenerator()
+    buffer = excel_gen.generate_cash_flow_report(transactions, start, end)
     return StreamingResponse(
         buffer,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
+        headers={"Content-Disposition": f'attachment; filename="{filename_base}.xlsx"'},
+    )
+
+
+@router.get(
+    "/reports/clients",
+    summary="Download clients report",
+)
+async def download_clients_report(
+    session: DbSession,
+    current_admin: CurrentAdmin,
+    start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
+    end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
+    format: str = Query("xlsx", pattern="^(xlsx|csv)$", description="Output format"),
+) -> StreamingResponse:
+    """Generate and download clients report (xlsx or csv).
+
+    Includes status, contact info, and wallet totals in centavos (no float).
+    Admin only endpoint.
+    """
+    from sqlalchemy import func, select
+    from app.infrastructure.db.models import UserModel, WalletModel
+
+    start = datetime.strptime(start_date, "%Y-%m-%d")
+    end = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+
+    result = await session.execute(
+        select(
+            UserModel,
+            func.coalesce(WalletModel.balance_cents, 0).label("balance_cents"),
+            func.coalesce(WalletModel.total_invested_cents, 0).label("total_invested_cents"),
+            func.coalesce(WalletModel.total_yield_cents, 0).label("total_yield_cents"),
+            func.coalesce(WalletModel.fundo_garantidor_cents, 0).label("fundo_garantidor_cents"),
+        )
+        .outerjoin(WalletModel, WalletModel.user_id == UserModel.id)
+        .where(UserModel.role == UserRole.CLIENT.value)
+        .where(UserModel.created_at >= start)
+        .where(UserModel.created_at <= end)
+        .order_by(UserModel.created_at.desc())
+    )
+    rows = result.all()
+
+    clients = [
+        {
+            "name": user.name,
+            "email": user.email,
+            "cpf": user.cpf or "",
+            "phone": user.phone or "",
+            "status": user.status,
+            "balance_cents": int(balance),
+            "total_invested_cents": int(total_invested),
+            "total_yield_cents": int(total_yield),
+            "fundo_garantidor_cents": int(fundo),
+            "created_at": user.created_at.strftime("%d/%m/%Y %H:%M"),
+        }
+        for user, balance, total_invested, total_yield, fundo in rows
+    ]
+
+    filename_base = f"clientes_{start_date}_{end_date}"
+
+    if format == "csv":
+        csv_gen = CsvReportGenerator()
+        data = csv_gen.generate_clients_report(clients)
+        return StreamingResponse(
+            iter([data]),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename_base}.csv"'},
+        )
+
+    excel_gen = ExcelReportGenerator()
+    buffer = excel_gen.generate_clients_report(clients, start, end)
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename_base}.xlsx"'},
+    )
+
+
+@router.get(
+    "/reports/transactions",
+    summary="Download transactions report",
+)
+async def download_transactions_report(
+    session: DbSession,
+    current_admin: CurrentAdmin,
+    start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
+    end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
+    format: str = Query("xlsx", pattern="^(xlsx|csv)$", description="Output format"),
+) -> StreamingResponse:
+    """Generate and download transactions report (xlsx or csv).
+
+    Includes id, dates, type, status, amount_cents, pix_transaction_id, description.
+    Admin only endpoint.
+    """
+    from sqlalchemy import select
+    from app.infrastructure.db.models import TransactionModel, UserModel
+
+    start = datetime.strptime(start_date, "%Y-%m-%d")
+    end = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+
+    result = await session.execute(
+        select(TransactionModel, UserModel.name)
+        .join(UserModel, TransactionModel.user_id == UserModel.id)
+        .where(TransactionModel.created_at >= start)
+        .where(TransactionModel.created_at <= end)
+        .order_by(TransactionModel.created_at.desc())
+    )
+    rows = result.all()
+
+    transactions = [
+        {
+            "id": str(t.id),
+            "client_name": name,
+            "created_at": t.created_at.strftime("%d/%m/%Y %H:%M"),
+            "confirmed_at": t.confirmed_at.strftime("%d/%m/%Y %H:%M") if t.confirmed_at else "",
+            "transaction_type": t.transaction_type,
+            "status": t.status,
+            "amount_cents": t.amount_cents,
+            "pix_transaction_id": t.pix_transaction_id or "",
+            "description": t.description or "",
+        }
+        for t, name in rows
+    ]
+
+    filename_base = f"transacoes_{start_date}_{end_date}"
+
+    if format == "csv":
+        csv_gen = CsvReportGenerator()
+        data = csv_gen.generate_transactions_report(transactions)
+        return StreamingResponse(
+            iter([data]),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename_base}.csv"'},
+        )
+
+    excel_gen = ExcelReportGenerator()
+    buffer = excel_gen.generate_transactions_report(transactions, start, end)
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename_base}.xlsx"'},
+    )
+
+
+@router.get(
+    "/reports/yields",
+    summary="Download yields report",
+)
+async def download_yields_report(
+    session: DbSession,
+    current_admin: CurrentAdmin,
+    start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
+    end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
+    format: str = Query("xlsx", pattern="^(xlsx|csv)$", description="Output format"),
+) -> StreamingResponse:
+    """Generate and download yields report (xlsx or csv).
+
+    Based on AuditLog entries with action=YIELD_CREDITED.
+    Includes sgs_series_id, yield_period_from/to, effective_rate,
+    principal_cents, yield_cents, installment_number, subscription_id,
+    principal_deposit_id, created_at and user name.
+    Admin only endpoint.
+    """
+    from sqlalchemy import select
+    from app.infrastructure.db.models import AuditLogModel, UserModel
+
+    start = datetime.strptime(start_date, "%Y-%m-%d")
+    end = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+
+    result = await session.execute(
+        select(AuditLogModel, UserModel.name)
+        .join(UserModel, AuditLogModel.actor_id == UserModel.id)
+        .where(AuditLogModel.action == AuditAction.YIELD_CREDITED.value)
+        .where(AuditLogModel.created_at >= start)
+        .where(AuditLogModel.created_at <= end)
+        .order_by(AuditLogModel.created_at.desc())
+    )
+    rows = result.all()
+
+    yields = [
+        {
+            "user_name": name,
+            "sgs_series_id": audit.details.get("sgs_series_id", ""),
+            "yield_period_from": audit.details.get("yield_period_from", ""),
+            "yield_period_to": audit.details.get("yield_period_to", ""),
+            "effective_rate": audit.details.get("effective_rate", ""),
+            "principal_cents": audit.details.get("principal_cents", 0),
+            "yield_cents": audit.details.get("yield_cents", 0),
+            "installment_number": audit.details.get("installment_number", ""),
+            "subscription_id": audit.details.get("subscription_id", ""),
+            "principal_deposit_id": audit.details.get("principal_deposit_id", ""),
+            "created_at": audit.created_at.strftime("%d/%m/%Y %H:%M"),
+        }
+        for audit, name in rows
+    ]
+
+    filename_base = f"rendimentos_{start_date}_{end_date}"
+
+    if format == "csv":
+        csv_gen = CsvReportGenerator()
+        data = csv_gen.generate_yields_report(yields)
+        return StreamingResponse(
+            iter([data]),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename_base}.csv"'},
+        )
+
+    excel_gen = ExcelReportGenerator()
+    buffer = excel_gen.generate_yields_report(yields, start, end)
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename_base}.xlsx"'},
     )
 
 

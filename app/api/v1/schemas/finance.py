@@ -355,3 +355,48 @@ class UnreadCountResponse(BaseModel):
     """Response schema for unread notification count."""
 
     unread_count: int = Field(..., description="Number of unread notifications")
+
+
+# ------------------------------------------------------------------
+# Admin Finance Schemas
+# ------------------------------------------------------------------
+
+
+class AdminFinanceSummaryResponse(BaseModel):
+    """Response schema for the admin finance summary."""
+
+    fundo_garantidor_cents: int = Field(..., description="Total fundo de proteção across all wallets")
+    total_inflow_cents: int = Field(..., description="Total confirmed inflows in period (cents)")
+    total_outflow_cents: int = Field(..., description="Total confirmed outflows in period (cents)")
+    net_balance_cents: int = Field(..., description="Net balance (inflow - outflow) in period (cents)")
+    period_start: str = Field(..., description="Period start date (YYYY-MM-DD)")
+    period_end: str = Field(..., description="Period end date (YYYY-MM-DD)")
+
+
+class AdminCashFlowEntryResponse(BaseModel):
+    """Response schema for a single cash flow entry."""
+
+    id: str = Field(..., description="Transaction UUID")
+    date: str = Field(..., description="Transaction date (ISO format)")
+    description: str = Field(..., description="Human-readable description")
+    type: str = Field(..., description="'inflow' or 'outflow'")
+    amount_cents: int = Field(..., description="Amount in cents")
+    category: str = Field(..., description="Category label in Portuguese")
+
+
+class AdminCashFlowListResponse(BaseModel):
+    """Response schema for paginated cash flow listing."""
+
+    entries: list[AdminCashFlowEntryResponse] = Field(..., description="Cash flow entries")
+    total: int = Field(..., description="Total count (unpaged)")
+    page: int = Field(..., description="Current page")
+    page_size: int = Field(..., description="Page size")
+
+
+class AdminReconciliationSummaryResponse(BaseModel):
+    """Response schema for reconciliation status counts."""
+
+    conciliado: int = Field(..., description="Count of reconciled deposits")
+    pendente: int = Field(..., description="Count of pending deposits")
+    divergente: int = Field(..., description="Count of divergent deposits")
+    total: int = Field(..., description="Total deposit count examined")
