@@ -76,8 +76,10 @@ class PlanRecommendationService:
     1. Filter active plans where target_amount fits within [min_value, max_value]
     2. For each viable plan, iterate valid deposit_count values
     3. Calculate monthly_amount and total cost using plan's existing parameters
-    4. Select combination with lowest total cost
-    5. Tiebreak by user preference (FEWER_PAYMENTS or LOWER_MONTHLY_AMOUNT)
+    4. Select the combination closest to a moderate position in the duration range:
+       - FEWER_PAYMENTS: targets the 25th percentile (shorter, not the minimum)
+       - LOWER_MONTHLY_AMOUNT: targets the 75th percentile (longer, not the maximum)
+    5. Tiebreak by total cost
 
     Cost calculation uses:
     - admin_tax_value_cents: Fixed cost (first installment only)
@@ -164,14 +166,25 @@ class PlanRecommendationService:
         if not candidates:
             return None
 
-        # Sort by user preference first, then tiebreak by cost.
-        # FEWER_PAYMENTS  -> fewest deposits (higher monthly), cost tiebreak
-        # LOWER_MONTHLY_AMOUNT -> lowest monthly (more deposits), cost tiebreak
+        # Sort by proximity to a moderate target within the plan's duration range,
+        # then tiebreak by cost.
+        # FEWER_PAYMENTS       -> target 25th percentile (shorter, not the minimum)
+        # LOWER_MONTHLY_AMOUNT -> target 75th percentile (longer, not the maximum)
         def sort_key(r: RecommendationResult) -> tuple:
+            min_d = r.min_duration_months
+            max_d = (
+                r.max_duration_months
+                if r.max_duration_months is not None
+                else MAX_DEPOSIT_COUNT_CAP
+            )
+            range_d = max(max_d - min_d, 1)
+            # Normalized position within [0, 1] of the plan's duration range
+            position = (r.deposit_count - min_d) / range_d
             if preference == RecommendationPreference.FEWER_PAYMENTS:
-                return (r.deposit_count, r.total_cost_cents)
+                distance = abs(position - 0.25)
             else:  # LOWER_MONTHLY_AMOUNT
-                return (r.monthly_amount_cents, r.total_cost_cents)
+                distance = abs(position - 0.75)
+            return (distance, r.total_cost_cents)
 
         candidates.sort(key=sort_key)
         return candidates[0]

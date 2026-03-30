@@ -51,24 +51,24 @@ class TestPlanRecommendationService:
     # ----------------------------------------------------------------
     # Scenario 1: Successful recommendation with FEWER_PAYMENTS
     # ----------------------------------------------------------------
-    def test_recommend_fewer_payments_returns_lowest_count(self):
+    def test_recommend_fewer_payments_returns_moderate_count(self):
         """With FEWER_PAYMENTS preference, the algorithm should pick
-        the combination with the fewest deposits (highest monthly amount),
-        tiebreaking by cost.
+        a moderate deposit count near the 25th percentile — fewer payments
+        but not the absolute minimum.
         """
         plan = _make_plan(
             min_value_cents=1_000_00,
             max_value_cents=100_000_00,
             min_duration_months=6,
-            max_duration_months=12,
-            admin_tax_value_cents=50_00,       # R$ 50 fixed
-            insurance_percent=Decimal("1.0"),    # 1%
-            guarantee_fund_percent_1=Decimal("1.0"),  # 1%
+            max_duration_months=60,
+            admin_tax_value_cents=50_00,
+            insurance_percent=Decimal("1.0"),
+            guarantee_fund_percent_1=Decimal("1.0"),
             guarantee_fund_threshold_cents=500_00,
             guarantee_fund_percent_2=Decimal("1.3"),
         )
 
-        target = 6_000_00  # R$ 6,000
+        target = 30_000_00  # R$ 30,000
         result = self.service.recommend(
             plans=[plan],
             target_amount_cents=target,
@@ -76,8 +76,11 @@ class TestPlanRecommendationService:
         )
 
         assert result is not None
-        # FEWER_PAYMENTS must pick the minimum deposit count
-        assert result.deposit_count == plan.min_duration_months
+        # Must not pick the extreme minimum
+        assert result.deposit_count > plan.min_duration_months
+        # Must stay in the shorter half of the range (below midpoint)
+        midpoint = (plan.min_duration_months + plan.max_duration_months) // 2
+        assert result.deposit_count < midpoint
         assert result.monthly_amount_cents > 0
         assert result.total_cost_cents > 0
 
@@ -89,15 +92,15 @@ class TestPlanRecommendationService:
     # ----------------------------------------------------------------
     # Scenario 2: Successful recommendation with LOWER_MONTHLY_AMOUNT
     # ----------------------------------------------------------------
-    def test_recommend_lower_monthly_amount_prefers_more_deposits(self):
-        """With LOWER_MONTHLY_AMOUNT preference, pick the combination
-        with the lowest monthly amount (= most deposits), tiebreaking by cost.
+    def test_recommend_lower_monthly_amount_returns_moderate_count(self):
+        """With LOWER_MONTHLY_AMOUNT preference, pick a moderate deposit count
+        near the 75th percentile — lower monthly but not the absolute maximum.
         """
         plan = _make_plan(
             min_value_cents=1_000_00,
             max_value_cents=100_000_00,
             min_duration_months=6,
-            max_duration_months=24,
+            max_duration_months=60,
             admin_tax_value_cents=50_00,
             insurance_percent=Decimal("1.0"),
             guarantee_fund_percent_1=Decimal("1.0"),
@@ -105,7 +108,7 @@ class TestPlanRecommendationService:
             guarantee_fund_percent_2=Decimal("1.3"),
         )
 
-        target = 12_000_00  # R$ 12,000
+        target = 30_000_00  # R$ 30,000
         result = self.service.recommend(
             plans=[plan],
             target_amount_cents=target,
@@ -113,8 +116,11 @@ class TestPlanRecommendationService:
         )
 
         assert result is not None
-        # LOWER_MONTHLY_AMOUNT must pick the maximum deposit count
-        assert result.deposit_count == plan.max_duration_months
+        # Must not pick the extreme maximum
+        assert result.deposit_count < plan.max_duration_months
+        # Must stay in the longer half of the range (above midpoint)
+        midpoint = (plan.min_duration_months + plan.max_duration_months) // 2
+        assert result.deposit_count > midpoint
         assert result.monthly_amount_cents > 0
         assert result.monthly_amount_cents <= target
 
