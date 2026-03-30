@@ -447,30 +447,20 @@ class TestTransaction:
 
 
 class TestInstallmentPayment:
-    """Test InstallmentPayment entity — is_stale logic."""
+    """Test Transaction.create_installment_payment — is_stale and confirm_payment logic."""
 
     def _make_payment(self, created_at=None, expiration_minutes=30):
-        from app.domain.entities.installment_payment import InstallmentPayment, PaymentStatus, InstallmentPaymentItem
-        pid = uuid4()
-        return InstallmentPayment(
-            id=pid,
+        from app.domain.entities.transaction import Transaction
+        tx = Transaction.create_installment_payment(
             user_id=uuid4(),
-            status=PaymentStatus.PENDING,
             total_amount_cents=50_000,
             pix_qr_code_data="qr",
-            pix_transaction_id=None,
             expiration_minutes=expiration_minutes,
-            items=[
-                InstallmentPaymentItem(
-                    id=uuid4(), payment_id=pid,
-                    subscription_id=uuid4(), subscription_name="Sub",
-                    plan_title="Plan", amount_cents=50_000,
-                    installment_number=1,
-                )
-            ],
-            created_at=created_at or datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            pix_transaction_fee_cents=0,
         )
+        if created_at is not None:
+            tx.created_at = created_at
+        return tx
 
     def test_is_stale_fresh_payment(self):
         """Payment created just now is not stale."""
@@ -492,7 +482,7 @@ class TestInstallmentPayment:
     def test_is_stale_confirmed_not_stale(self):
         """Confirmed payment is never stale."""
         p = self._make_payment(created_at=datetime.utcnow() - timedelta(hours=2))
-        p.confirm("pix_tx_1")
+        p.confirm_payment("pix_tx_1")
         assert p.is_stale() is False
 
     def test_is_stale_expired_not_stale(self):

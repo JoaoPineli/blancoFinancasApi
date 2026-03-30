@@ -41,7 +41,7 @@ def _make_deposit(
         id=uuid4(),
         user_id=user_id,
         subscription_id=uuid4(),
-        installment_payment_item_id=uuid4(),
+        transaction_item_id=uuid4(),
         installment_number=installment_number,
         principal_cents=principal_cents,
         deposited_at=deposited_at,

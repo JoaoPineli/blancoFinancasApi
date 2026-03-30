@@ -165,7 +165,7 @@ class TransactionModel(Base):
         ForeignKey("user_plan_subscriptions.id"),
         nullable=True,
     )
-    transaction_type: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    transaction_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
     amount_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
     installment_number: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -179,15 +179,65 @@ class TransactionModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # Payment-flow fields (SUBSCRIPTION_INSTALLMENT_PAYMENT / SUBSCRIPTION_ACTIVATION_PAYMENT)
+    pix_qr_code_data: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    expiration_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    pix_transaction_fee_cents: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    # Activation-payment breakdown snapshots
+    admin_tax_cents: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    insurance_cents: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
 
     # Relationships
     user: Mapped["UserModel"] = relationship(back_populates="transactions")
     contract: Mapped[Optional["ContractModel"]] = relationship(back_populates="transactions")
+    items: Mapped[list["TransactionItemModel"]] = relationship(
+        back_populates="transaction", cascade="all, delete-orphan"
+    )
 
     # Indexes
     __table_args__ = (
         Index("ix_transactions_user_type_status", "user_id", "transaction_type", "status"),
         Index("ix_transactions_subscription_id", "subscription_id"),
+        Index("ix_transactions_pix_transaction_id", "pix_transaction_id"),
+    )
+
+
+class TransactionItemModel(Base):
+    """SQLAlchemy model for transaction line-items.
+
+    One item per subscription within a SUBSCRIPTION_INSTALLMENT_PAYMENT or
+    SUBSCRIPTION_ACTIVATION_PAYMENT transaction.
+    """
+
+    __tablename__ = "transaction_items"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    transaction_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("transactions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    subscription_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("user_plan_subscriptions.id"),
+        nullable=False,
+    )
+    subscription_name: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    plan_title: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    amount_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    installment_number: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # Relationships
+    transaction: Mapped["TransactionModel"] = relationship(back_populates="items")
+
+    __table_args__ = (
+        Index("ix_transaction_items_transaction_id", "transaction_id"),
+        Index("ix_transaction_items_subscription_id", "subscription_id"),
+        Index(
+            "ix_transaction_items_sub_transaction",
+            "subscription_id",
+            "transaction_id",
+        ),
     )
 
 
@@ -297,9 +347,10 @@ class YieldDataModel(Base):
 class PrincipalDepositModel(Base):
     """SQLAlchemy model for per-installment principal deposit tracking.
 
-    Each confirmed InstallmentPaymentItem produces one PrincipalDeposit.
-    deposited_at is the anchor date for poupança anniversary calculation.
-    last_yield_run_date enables idempotent yield crediting.
+    Each confirmed SUBSCRIPTION_INSTALLMENT_PAYMENT TransactionItem produces
+    one PrincipalDeposit. deposited_at is the anchor date for poupança
+    anniversary calculation. last_yield_run_date enables idempotent yield
+    crediting.
     """
 
     __tablename__ = "principal_deposits"
@@ -313,11 +364,11 @@ class PrincipalDepositModel(Base):
         ForeignKey("user_plan_subscriptions.id"),
         nullable=False,
     )
-    installment_payment_item_id: Mapped[UUID] = mapped_column(
+    transaction_item_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True),
-        ForeignKey("installment_payment_items.id"),
+        ForeignKey("transaction_items.id"),
         nullable=False,
-        unique=True,  # one deposit per payment item
+        unique=True,  # one deposit per transaction item
     )
     installment_number: Mapped[int] = mapped_column(Integer, nullable=False)
     principal_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -356,75 +407,6 @@ class UserTokenModel(Base):
     )
 
 
-class InstallmentPaymentModel(Base):
-    """SQLAlchemy model for grouped installment payments.
-
-    A single Pix payment that covers one or more subscription installments.
-    """
-
-    __tablename__ = "installment_payments"
-
-    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
-    user_id: Mapped[UUID] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
-    )
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
-    total_amount_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    pix_qr_code_data: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    pix_transaction_id: Mapped[Optional[str]] = mapped_column(
-        String(100), nullable=True, unique=True, index=True
-    )
-    expiration_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
-    pix_transaction_fee_cents: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-
-    # Relationships
-    items: Mapped[list["InstallmentPaymentItemModel"]] = relationship(
-        back_populates="payment", cascade="all, delete-orphan"
-    )
-
-    __table_args__ = (
-        Index("ix_installment_payments_user_status", "user_id", "status"),
-    )
-
-
-class InstallmentPaymentItemModel(Base):
-    """SQLAlchemy model for individual installments within a grouped payment."""
-
-    __tablename__ = "installment_payment_items"
-
-    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
-    payment_id: Mapped[UUID] = mapped_column(
-        PGUUID(as_uuid=True),
-        ForeignKey("installment_payments.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    subscription_id: Mapped[UUID] = mapped_column(
-        PGUUID(as_uuid=True),
-        ForeignKey("user_plan_subscriptions.id"),
-        nullable=False,
-        index=True,
-    )
-    subscription_name: Mapped[str] = mapped_column(String(120), nullable=False, default="")
-    plan_title: Mapped[str] = mapped_column(String(100), nullable=False, default="")
-    amount_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    installment_number: Mapped[int] = mapped_column(Integer, nullable=False)
-
-    # Relationships
-    payment: Mapped["InstallmentPaymentModel"] = relationship(back_populates="items")
-
-    __table_args__ = (
-        Index(
-            "ix_installment_payment_items_sub_payment",
-            "subscription_id",
-            "payment_id",
-        ),
-    )
-
-
 class NotificationModel(Base):
     """SQLAlchemy model for admin notifications."""
 
@@ -445,30 +427,4 @@ class NotificationModel(Base):
         Index("ix_notifications_notification_type", "notification_type"),
         Index("ix_notifications_is_read", "is_read"),
         Index("ix_notifications_created_at", "created_at"),
-    )
-
-
-class SubscriptionActivationPaymentModel(Base):
-    """SQLAlchemy model for subscription activation payments."""
-
-    __tablename__ = "subscription_activation_payments"
-
-    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
-    user_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
-    subscription_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("user_plan_subscriptions.id"), nullable=False, index=True)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
-    admin_tax_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    insurance_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    pix_transaction_fee_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    total_amount_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    pix_qr_code_data: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    pix_transaction_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, unique=True, index=True)
-    expiration_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-
-    __table_args__ = (
-        Index("ix_subscription_activation_payments_user_status", "user_id", "status"),
-        Index("ix_subscription_activation_payments_sub_id", "subscription_id"),
     )

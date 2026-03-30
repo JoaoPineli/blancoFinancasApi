@@ -26,7 +26,7 @@ from app.application.dtos.subscription import (
     UpdateDepositDayInput,
     UpdateNameInput,
 )
-from app.application.dtos.subscription_activation_payment import CreateActivationPaymentInput
+from app.application.dtos.finance import CreateActivationPaymentInput
 from app.application.services.subscription_activation_payment_service import (
     SubscriptionActivationPaymentService,
 )

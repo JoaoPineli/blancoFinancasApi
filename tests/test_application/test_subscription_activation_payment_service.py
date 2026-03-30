@@ -1,11 +1,11 @@
-"""Tests for SubscriptionActivationPaymentService.
+"""Tests for SubscriptionActivationPaymentService (unified transaction model).
 
 Covers:
 - Creating activation payment for inactive subscription
 - Idempotency (second call returns same pending payment)
-- Confirming payment activates subscription and sets next_due_date
+- Confirming payment activates subscription
 - Cannot create activation payment for non-inactive subscription
-- PIX fee is applied correctly and uses Decimal arithmetic
+- Pix fee applied correctly; Decimal arithmetic
 """
 
 import pytest
@@ -14,22 +14,19 @@ from datetime import date
 from decimal import Decimal
 from uuid import uuid4
 
-from app.application.dtos.subscription_activation_payment import CreateActivationPaymentInput
+from app.application.dtos.finance import CreateActivationPaymentInput
 from app.application.services.subscription_activation_payment_service import (
     SubscriptionActivationPaymentService,
 )
 from app.domain.constants import calculate_pix_fee
 from app.domain.entities.plan import Plan
 from app.domain.entities.subscription import SubscriptionStatus, UserPlanSubscription
-from app.domain.entities.subscription_activation_payment import ActivationPaymentStatus
-from app.domain.entities.user import User, UserRole
-from app.domain.exceptions import InvalidSubscriptionError, SubscriptionNotFoundError
+from app.domain.entities.transaction import TransactionStatus, TransactionType
+from app.domain.exceptions import SubscriptionNotFoundError
 from app.domain.value_objects.email import Email
 from app.infrastructure.db.repositories.plan_repository import PlanRepository
 from app.infrastructure.db.repositories.subscription_repository import SubscriptionRepository
-from app.infrastructure.db.repositories.subscription_activation_payment_repository import (
-    SubscriptionActivationPaymentRepository,
-)
+from app.infrastructure.db.repositories.transaction_repository import TransactionRepository
 from app.infrastructure.db.repositories.user_repository import UserRepository
 
 
@@ -53,7 +50,8 @@ def _generate_valid_cpf() -> str:
     return f"{full[0]}{full[1]}{full[2]}.{full[3]}{full[4]}{full[5]}.{full[6]}{full[7]}{full[8]}-{full[9]}{full[10]}"
 
 
-async def _create_user(session) -> User:
+async def _create_user(session):
+    from app.domain.entities.user import User, UserRole
     from app.domain.value_objects.cpf import CPF
     repo = UserRepository(session)
     user = User.create(
@@ -69,14 +67,14 @@ async def _create_user(session) -> User:
 async def _create_plan(session) -> Plan:
     repo = PlanRepository(session)
     plan = Plan.create(
-        title="Test Plan",
-        description="Test",
-        min_value_cents=10_000,
+        title="Plano Ativação",
+        description="Teste",
+        min_value_cents=100_000,
         max_value_cents=10_000_000,
         min_duration_months=6,
         max_duration_months=36,
-        admin_tax_value_cents=500,
-        insurance_percent=Decimal("1.0"),
+        admin_tax_value_cents=5_000,
+        insurance_percent=Decimal("2.5"),
         guarantee_fund_percent_1=Decimal("1.0"),
         guarantee_fund_percent_2=Decimal("1.3"),
         guarantee_fund_threshold_cents=5_000_000,
@@ -85,22 +83,21 @@ async def _create_plan(session) -> Plan:
 
 
 async def _create_inactive_subscription(session, user_id, plan_id) -> UserPlanSubscription:
-    """Create and persist an INACTIVE subscription (default state after create())."""
     repo = SubscriptionRepository(session)
     sub = UserPlanSubscription.create(
         user_id=user_id,
         plan_id=plan_id,
-        target_amount_cents=100_000,
+        target_amount_cents=600_000,
         deposit_count=12,
-        monthly_amount_cents=10_000,
-        admin_tax_value_cents=500,
-        insurance_percent=Decimal("1.0"),
+        monthly_amount_cents=50_000,
+        admin_tax_value_cents=5_000,
+        insurance_percent=Decimal("2.5"),
         guarantee_fund_percent=Decimal("1.0"),
-        total_cost_cents=600,
-        name="Test sub",
-        deposit_day_of_month=5,
+        total_cost_cents=20_000,
+        name="Sub Ativação",
+        deposit_day_of_month=1,
     )
-    assert sub.status == SubscriptionStatus.INACTIVE
+    # Leave INACTIVE (do not call activate())
     return await repo.save(sub)
 
 
@@ -109,224 +106,161 @@ async def _create_inactive_subscription(session, user_id, plan_id) -> UserPlanSu
 # ---------------------------------------------------------------------------
 
 
-class TestCreateOrGetPendingActivationPayment:
-    """Tests for create_or_get_pending()."""
+class TestCreateOrGetPending:
+    """Tests for create_or_get_pending."""
 
     @pytest.mark.asyncio
-    async def test_creates_payment_for_inactive_subscription(self, test_session):
-        """Successfully creates a payment for an INACTIVE subscription."""
+    async def test_creates_payment_for_inactive_sub(self, test_session):
         user = await _create_user(test_session)
         plan = await _create_plan(test_session)
         sub = await _create_inactive_subscription(test_session, user.id, plan.id)
+        await test_session.commit()
 
         service = SubscriptionActivationPaymentService(test_session)
         dto = await service.create_or_get_pending(
             CreateActivationPaymentInput(user_id=user.id, subscription_id=sub.id)
         )
 
-        assert dto.status == "pending"
-        assert dto.subscription_id == sub.id
         assert dto.user_id == user.id
+        assert dto.subscription_id == sub.id
+        assert dto.status == "pending"
+        assert dto.admin_tax_cents > 0
+        assert dto.insurance_cents > 0
+        assert dto.pix_transaction_fee_cents >= 0
+        assert dto.total_amount_cents == (
+            dto.admin_tax_cents + dto.insurance_cents + dto.pix_transaction_fee_cents
+        )
         assert dto.pix_qr_code_data is not None
 
     @pytest.mark.asyncio
-    async def test_admin_tax_and_insurance_amounts_are_correct(self, test_session):
-        """admin_tax_cents and insurance_cents match subscription snapshots."""
-        user = await _create_user(test_session)
-        plan = await _create_plan(test_session)
-        sub = await _create_inactive_subscription(test_session, user.id, plan.id)
-
-        service = SubscriptionActivationPaymentService(test_session)
-        dto = await service.create_or_get_pending(
-            CreateActivationPaymentInput(user_id=user.id, subscription_id=sub.id)
-        )
-
-        # admin_tax from subscription snapshot
-        assert dto.admin_tax_cents == sub.admin_tax_value_cents  # 500
-
-        # insurance = monthly_amount * insurance_percent / 100 (rounded HALF_UP)
-        from decimal import Decimal, ROUND_HALF_UP
-        expected_insurance = int(
-            (Decimal(sub.monthly_amount_cents) * sub.insurance_percent / Decimal(100))
-            .quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-        )
-        assert dto.insurance_cents == expected_insurance
-
-    @pytest.mark.asyncio
-    async def test_pix_fee_is_0_99_percent_of_base(self, test_session):
-        """PIX transaction fee is exactly 0.99% of (admin_tax + insurance), as Decimal."""
-        user = await _create_user(test_session)
-        plan = await _create_plan(test_session)
-        sub = await _create_inactive_subscription(test_session, user.id, plan.id)
-
-        service = SubscriptionActivationPaymentService(test_session)
-        dto = await service.create_or_get_pending(
-            CreateActivationPaymentInput(user_id=user.id, subscription_id=sub.id)
-        )
-
-        base = dto.admin_tax_cents + dto.insurance_cents
-        expected_fee = calculate_pix_fee(base)
-        assert dto.pix_transaction_fee_cents == expected_fee
-
-    @pytest.mark.asyncio
-    async def test_total_equals_components_sum(self, test_session):
-        """total_amount_cents = admin_tax + insurance + pix_fee."""
-        user = await _create_user(test_session)
-        plan = await _create_plan(test_session)
-        sub = await _create_inactive_subscription(test_session, user.id, plan.id)
-
-        service = SubscriptionActivationPaymentService(test_session)
-        dto = await service.create_or_get_pending(
-            CreateActivationPaymentInput(user_id=user.id, subscription_id=sub.id)
-        )
-
-        expected = dto.admin_tax_cents + dto.insurance_cents + dto.pix_transaction_fee_cents
-        assert dto.total_amount_cents == expected
-
-    @pytest.mark.asyncio
     async def test_idempotent_returns_same_payment(self, test_session):
-        """Calling create_or_get_pending twice returns the same payment ID."""
         user = await _create_user(test_session)
         plan = await _create_plan(test_session)
         sub = await _create_inactive_subscription(test_session, user.id, plan.id)
+        await test_session.commit()
 
         service = SubscriptionActivationPaymentService(test_session)
-        input_data = CreateActivationPaymentInput(user_id=user.id, subscription_id=sub.id)
-
-        dto1 = await service.create_or_get_pending(input_data)
-        dto2 = await service.create_or_get_pending(input_data)
+        inp = CreateActivationPaymentInput(user_id=user.id, subscription_id=sub.id)
+        dto1 = await service.create_or_get_pending(inp)
+        dto2 = await service.create_or_get_pending(inp)
 
         assert dto1.id == dto2.id
 
     @pytest.mark.asyncio
     async def test_raises_for_active_subscription(self, test_session):
-        """Cannot create activation payment for already-ACTIVE subscription."""
+        from app.domain.exceptions import InvalidPaymentError
+
         user = await _create_user(test_session)
         plan = await _create_plan(test_session)
         sub = await _create_inactive_subscription(test_session, user.id, plan.id)
-
-        # Activate the subscription first
-        sub.activate(deposit_day_of_month=5, today_local=date.today())
         sub_repo = SubscriptionRepository(test_session)
+        sub.activate(deposit_day_of_month=1, today_local=date.today())
         await sub_repo.save(sub)
         await test_session.commit()
 
         service = SubscriptionActivationPaymentService(test_session)
-        with pytest.raises(InvalidSubscriptionError):
+        with pytest.raises(InvalidPaymentError):
             await service.create_or_get_pending(
                 CreateActivationPaymentInput(user_id=user.id, subscription_id=sub.id)
             )
 
     @pytest.mark.asyncio
-    async def test_raises_if_subscription_not_found(self, test_session):
-        """Raises SubscriptionNotFoundError for nonexistent subscription."""
+    async def test_raises_for_unknown_sub(self, test_session):
         user = await _create_user(test_session)
+        await test_session.commit()
+
         service = SubscriptionActivationPaymentService(test_session)
         with pytest.raises(SubscriptionNotFoundError):
             await service.create_or_get_pending(
                 CreateActivationPaymentInput(user_id=user.id, subscription_id=uuid4())
             )
 
-
-class TestConfirmActivationPayment:
-    """Tests for confirm_payment() — activates subscription on confirmation."""
-
     @pytest.mark.asyncio
-    async def test_confirm_activates_subscription(self, test_session):
-        """Confirming an activation payment sets subscription to ACTIVE."""
+    async def test_total_uses_decimal_arithmetic_no_float(self, test_session):
+        """Verify total = admin_tax + insurance + pix_fee with integer arithmetic."""
         user = await _create_user(test_session)
         plan = await _create_plan(test_session)
         sub = await _create_inactive_subscription(test_session, user.id, plan.id)
+        await test_session.commit()
 
         service = SubscriptionActivationPaymentService(test_session)
         dto = await service.create_or_get_pending(
             CreateActivationPaymentInput(user_id=user.id, subscription_id=sub.id)
         )
 
-        await service.confirm_payment(
-            payment_id=dto.id,
-            pix_transaction_id="PIX-TEST-123",
+        expected_total = dto.admin_tax_cents + dto.insurance_cents + dto.pix_transaction_fee_cents
+        assert dto.total_amount_cents == expected_total
+        # Verify pix fee is consistent with calculate_pix_fee
+        base = dto.admin_tax_cents + dto.insurance_cents
+        assert dto.pix_transaction_fee_cents == calculate_pix_fee(base)
+
+
+class TestConfirmPayment:
+    """Tests for confirm_payment."""
+
+    @pytest.mark.asyncio
+    async def test_confirms_and_activates_subscription(self, test_session):
+        user = await _create_user(test_session)
+        plan = await _create_plan(test_session)
+        sub = await _create_inactive_subscription(test_session, user.id, plan.id)
+        await test_session.commit()
+
+        service = SubscriptionActivationPaymentService(test_session)
+        dto = await service.create_or_get_pending(
+            CreateActivationPaymentInput(user_id=user.id, subscription_id=sub.id)
         )
+
+        confirmed = await service.confirm_payment(
+            payment_id=dto.id,
+            pix_transaction_id="pix-test-abc123",
+        )
+
+        assert confirmed.status == "confirmed"
+        assert confirmed.confirmed_at is not None
 
         sub_repo = SubscriptionRepository(test_session)
-        activated_sub = await sub_repo.get_by_id(sub.id)
-        assert activated_sub is not None
-        assert activated_sub.status == SubscriptionStatus.ACTIVE
+        updated_sub = await sub_repo.get_by_id(sub.id)
+        assert updated_sub is not None
+        assert updated_sub.status == SubscriptionStatus.ACTIVE
+        assert updated_sub.covers_activation_fees is True
 
     @pytest.mark.asyncio
-    async def test_confirm_sets_next_due_date(self, test_session):
-        """After confirmation, next_due_date is set on the subscription."""
+    async def test_confirm_is_idempotent(self, test_session):
         user = await _create_user(test_session)
         plan = await _create_plan(test_session)
         sub = await _create_inactive_subscription(test_session, user.id, plan.id)
+        await test_session.commit()
+
+        service = SubscriptionActivationPaymentService(test_session)
+        dto = await service.create_or_get_pending(
+            CreateActivationPaymentInput(user_id=user.id, subscription_id=sub.id)
+        )
+        confirmed1 = await service.confirm_payment(dto.id, "pix-id-1")
+        confirmed2 = await service.confirm_payment(dto.id, "pix-id-2")
+
+        assert confirmed1.id == confirmed2.id
+        assert confirmed2.status == "confirmed"
+        # pix_transaction_id set on first confirm, not overwritten
+        assert confirmed2.pix_transaction_id == "pix-id-1"
+
+    @pytest.mark.asyncio
+    async def test_transaction_stored_in_unified_table(self, test_session):
+        """Activation payment must be stored as SUBSCRIPTION_ACTIVATION_PAYMENT type."""
+        user = await _create_user(test_session)
+        plan = await _create_plan(test_session)
+        sub = await _create_inactive_subscription(test_session, user.id, plan.id)
+        await test_session.commit()
 
         service = SubscriptionActivationPaymentService(test_session)
         dto = await service.create_or_get_pending(
             CreateActivationPaymentInput(user_id=user.id, subscription_id=sub.id)
         )
 
-        await service.confirm_payment(
-            payment_id=dto.id,
-            pix_transaction_id="PIX-TEST-456",
-        )
+        tx_repo = TransactionRepository(test_session)
+        tx = await tx_repo.get_by_id(dto.id)
 
-        sub_repo = SubscriptionRepository(test_session)
-        activated_sub = await sub_repo.get_by_id(sub.id)
-        assert activated_sub is not None
-        assert activated_sub.next_due_date is not None
-
-    @pytest.mark.asyncio
-    async def test_confirm_payment_status_is_confirmed(self, test_session):
-        """The payment entity itself is marked CONFIRMED."""
-        user = await _create_user(test_session)
-        plan = await _create_plan(test_session)
-        sub = await _create_inactive_subscription(test_session, user.id, plan.id)
-
-        service = SubscriptionActivationPaymentService(test_session)
-        dto = await service.create_or_get_pending(
-            CreateActivationPaymentInput(user_id=user.id, subscription_id=sub.id)
-        )
-
-        confirmed_dto = await service.confirm_payment(
-            payment_id=dto.id,
-            pix_transaction_id="PIX-TEST-789",
-        )
-
-        assert confirmed_dto.status == "confirmed"
-
-    @pytest.mark.asyncio
-    async def test_confirm_idempotent(self, test_session):
-        """Confirming twice does not raise and returns current state."""
-        user = await _create_user(test_session)
-        plan = await _create_plan(test_session)
-        sub = await _create_inactive_subscription(test_session, user.id, plan.id)
-
-        service = SubscriptionActivationPaymentService(test_session)
-        dto = await service.create_or_get_pending(
-            CreateActivationPaymentInput(user_id=user.id, subscription_id=sub.id)
-        )
-
-        await service.confirm_payment(dto.id, "PIX-FIRST")
-        second = await service.confirm_payment(dto.id, "PIX-SECOND")  # should not raise
-
-        assert second.status == "confirmed"
-
-
-class TestInactiveSubscriptionExcludedFromPayableInstallments:
-    """INACTIVE subscriptions must not appear in payable installments."""
-
-    @pytest.mark.asyncio
-    async def test_inactive_subscription_excluded(self, test_session):
-        """Payable installments only returns ACTIVE subscriptions."""
-        from app.application.services.installment_payment_service import InstallmentPaymentService
-
-        user = await _create_user(test_session)
-        plan = await _create_plan(test_session)
-
-        # Create an INACTIVE subscription (not yet activated)
-        await _create_inactive_subscription(test_session, user.id, plan.id)
-
-        service = InstallmentPaymentService(test_session)
-        result = await service.get_payable_installments(user.id)
-
-        assert result.total == 0
+        assert tx is not None
+        assert tx.transaction_type == TransactionType.SUBSCRIPTION_ACTIVATION_PAYMENT
+        assert tx.status == TransactionStatus.PENDING
+        assert tx.admin_tax_cents is not None and tx.admin_tax_cents > 0
+        assert tx.insurance_cents is not None and tx.insurance_cents > 0

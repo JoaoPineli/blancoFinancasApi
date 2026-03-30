@@ -45,29 +45,25 @@ from app.api.v1.schemas.plan import (
 from app.application.dtos.finance import ApproveWithdrawalInput
 from app.application.dtos.plan import CreatePlanInput, UpdatePlanInput
 from app.application.services.deposit_service import CreateDepositService
-from app.application.services.installment_payment_service import (
-    InstallmentPaymentService,
-)
+from app.application.services.installment_payment_service import InstallmentPaymentService
 from app.application.services.notification_service import NotificationService
 from app.application.services.plan_service import PlanService
 from app.application.services.withdrawal_service import WithdrawalService
 from app.application.services.yield_service import YieldService
 from app.domain.entities.audit_log import AuditAction, AuditLog
+from app.domain.entities.transaction import TransactionStatus, TransactionType
 from app.domain.entities.user import UserRole, UserStatus
 from app.domain.exceptions import (
     AuthorizationError,
-    UserNotFoundError,
-    PlanNotFoundError,
     InvalidWithdrawalError,
+    PlanNotFoundError,
     TransactionNotFoundError,
+    UserNotFoundError,
 )
 from app.infrastructure.bcb.exceptions import BCBUnavailableError
 from app.infrastructure.db.repositories.audit_log_repository import AuditLogRepository
-from app.infrastructure.db.repositories.installment_payment_repository import (
-    InstallmentPaymentRepository,
-)
-from app.infrastructure.db.repositories.user_repository import UserRepository
 from app.infrastructure.db.repositories.transaction_repository import TransactionRepository
+from app.infrastructure.db.repositories.user_repository import UserRepository
 from app.infrastructure.exports.csv_generator import CsvReportGenerator
 from app.infrastructure.exports.excel_generator import ExcelReportGenerator
 from app.infrastructure.exports.pdf_report_generator import PdfReportGenerator
@@ -593,16 +589,24 @@ async def pix_webhook(
 ) -> dict:
     """Handle Pix payment webhook from gateway.
 
-    Reconciles incoming payments with pending transactions
-    and installment payments.
+    All payment types — legacy DEPOSIT, SUBSCRIPTION_INSTALLMENT_PAYMENT, and
+    SUBSCRIPTION_ACTIVATION_PAYMENT — are unified under the transactions table.
+    Dispatch is determined by transaction_type.
     """
-    transaction_repo = TransactionRepository(session)
-    installment_payment_repo = InstallmentPaymentRepository(session)
+    from app.application.services.subscription_activation_payment_service import (
+        SubscriptionActivationPaymentService,
+    )
 
-    # 1. Try legacy transaction reconciliation
+    transaction_repo = TransactionRepository(session)
     transaction = await transaction_repo.get_by_pix_transaction_id(payload.pix_id)
 
-    if transaction:
+    if not transaction:
+        return {"status": "unknown_transaction", "pix_id": payload.pix_id}
+
+    tx_type = transaction.transaction_type
+
+    # --- Legacy contract deposit flow ---
+    if tx_type == TransactionType.DEPOSIT:
         if payload.status == "confirmed":
             service = CreateDepositService(session)
             await service.confirm_deposit(
@@ -613,69 +617,43 @@ async def pix_webhook(
         elif payload.status == "failed":
             transaction.fail()
             await transaction_repo.save(transaction)
+            await session.commit()
             return {"status": "failed", "transaction_id": str(transaction.id)}
         return {"status": "ignored", "pix_status": payload.status}
 
-    # 2. Try installment payment reconciliation
-    installment_payment = await installment_payment_repo.get_by_pix_transaction_id(
-        payload.pix_id
-    )
-
-    if installment_payment:
+    # --- Subscription installment payment ---
+    if tx_type == TransactionType.SUBSCRIPTION_INSTALLMENT_PAYMENT:
         if payload.status == "confirmed":
             service = InstallmentPaymentService(session)
             await service.confirm_payment(
-                payment_id=installment_payment.id,
+                payment_id=transaction.id,
                 pix_transaction_id=payload.pix_id,
             )
-            return {
-                "status": "confirmed",
-                "installment_payment_id": str(installment_payment.id),
-            }
+            return {"status": "confirmed", "transaction_id": str(transaction.id)}
         elif payload.status == "failed":
-            installment_payment.fail()
-            await installment_payment_repo.save(installment_payment)
+            transaction.fail()
+            await transaction_repo.save(transaction)
             await session.commit()
-            return {
-                "status": "failed",
-                "installment_payment_id": str(installment_payment.id),
-            }
+            return {"status": "failed", "transaction_id": str(transaction.id)}
         return {"status": "ignored", "pix_status": payload.status}
 
-    # 3. Try subscription activation payment reconciliation
-    from app.application.services.subscription_activation_payment_service import (
-        SubscriptionActivationPaymentService,
-    )
-    from app.infrastructure.db.repositories.subscription_activation_payment_repository import (
-        SubscriptionActivationPaymentRepository,
-    )
-
-    activation_payment_repo = SubscriptionActivationPaymentRepository(session)
-    activation_payment = await activation_payment_repo.get_by_pix_transaction_id(payload.pix_id)
-
-    if activation_payment:
+    # --- Subscription activation payment ---
+    if tx_type == TransactionType.SUBSCRIPTION_ACTIVATION_PAYMENT:
         if payload.status == "confirmed":
             activation_service = SubscriptionActivationPaymentService(session)
             await activation_service.confirm_payment(
-                payment_id=activation_payment.id,
+                payment_id=transaction.id,
                 pix_transaction_id=payload.pix_id,
             )
-            return {
-                "status": "confirmed",
-                "activation_payment_id": str(activation_payment.id),
-            }
+            return {"status": "confirmed", "transaction_id": str(transaction.id)}
         elif payload.status == "failed":
-            activation_payment.fail()
-            await activation_payment_repo.save(activation_payment)
+            transaction.fail()
+            await transaction_repo.save(transaction)
             await session.commit()
-            return {
-                "status": "failed",
-                "activation_payment_id": str(activation_payment.id),
-            }
+            return {"status": "failed", "transaction_id": str(transaction.id)}
         return {"status": "ignored", "pix_status": payload.status}
 
-    # 4. Unknown payment
-    return {"status": "unknown_transaction", "pix_id": payload.pix_id}
+    return {"status": "ignored", "pix_status": payload.status, "transaction_type": tx_type.value}
 
 
 # ============================================================================
@@ -693,48 +671,54 @@ async def get_finance_summary(
     current_admin: CurrentAdmin,
     start_date: str = Query(..., description="Period start (YYYY-MM-DD)"),
     end_date: str = Query(..., description="Period end (YYYY-MM-DD)"),
-    category: Optional[str] = Query(None, description="Filter: deposit|withdrawal|yield|fee|fundo_garantidor|activation"),
+    category: Optional[str] = Query(None, description="Filter: deposit|withdrawal|yield|fee|fundo_garantidor|activation|installment"),
     flow_type: Optional[str] = Query(None, description="Filter by flow direction (inflow|outflow)"),
 ) -> AdminFinanceSummaryResponse:
     """Return fundo de proteção total + inflow/outflow/net for the given period.
 
-    Data sources:
-    - TransactionModel: DEPOSIT (old flow), WITHDRAWAL, YIELD, FEE, FUNDO_GARANTIDOR.
-    - InstallmentPaymentModel: subscription installment payments (new flow → Depósito / inflow).
-    - SubscriptionActivationPaymentModel: activation fees (Taxa de Ativação / inflow).
-
+    All payment data comes from the unified transactions table.
     fundo_garantidor_cents is always the full wallet sum, never filtered.
     """
     from sqlalchemy import func, select
-    from app.domain.entities.transaction import TransactionStatus, TransactionType
-    from app.infrastructure.db.models import (
-        InstallmentPaymentModel,
-        SubscriptionActivationPaymentModel,
-        TransactionModel,
-        WalletModel,
-    )
+    from app.infrastructure.db.models import TransactionModel, WalletModel
 
     start = datetime.strptime(start_date, "%Y-%m-%d")
     end = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
 
-    _TX_INFLOW = {TransactionType.DEPOSIT.value, TransactionType.YIELD.value}
-    _TX_OUTFLOW = {TransactionType.WITHDRAWAL.value, TransactionType.FEE.value, TransactionType.FUNDO_GARANTIDOR.value}
-    _TX_ALL = _TX_INFLOW | _TX_OUTFLOW
+    _INFLOW_TYPES = {
+        TransactionType.DEPOSIT.value,
+        TransactionType.YIELD.value,
+        TransactionType.SUBSCRIPTION_INSTALLMENT_PAYMENT.value,
+        TransactionType.SUBSCRIPTION_ACTIVATION_PAYMENT.value,
+    }
+    _OUTFLOW_TYPES = {
+        TransactionType.WITHDRAWAL.value,
+        TransactionType.FEE.value,
+        TransactionType.FUNDO_GARANTIDOR.value,
+    }
+    _CATEGORY_TO_TYPE = {
+        "deposit": TransactionType.DEPOSIT.value,
+        "withdrawal": TransactionType.WITHDRAWAL.value,
+        "yield": TransactionType.YIELD.value,
+        "fee": TransactionType.FEE.value,
+        "fundo_garantidor": TransactionType.FUNDO_GARANTIDOR.value,
+        "activation": TransactionType.SUBSCRIPTION_ACTIVATION_PAYMENT.value,
+        "installment": TransactionType.SUBSCRIPTION_INSTALLMENT_PAYMENT.value,
+    }
 
-    # Resolve TransactionModel types to include
-    tx_applicable = _TX_ALL.copy()
-    if category == "activation":
-        tx_applicable = set()  # activation payments are in a separate table
-    elif category and category in _TX_ALL:
-        tx_applicable = {category}
+    # Determine which types to include
+    if category and category in _CATEGORY_TO_TYPE:
+        applicable_types = {_CATEGORY_TO_TYPE[category]}
+    else:
+        applicable_types = _INFLOW_TYPES | _OUTFLOW_TYPES
+
     if flow_type == "inflow":
-        tx_applicable &= _TX_INFLOW
+        applicable_types &= _INFLOW_TYPES
     elif flow_type == "outflow":
-        tx_applicable &= _TX_OUTFLOW
+        applicable_types &= _OUTFLOW_TYPES
 
-    # Whether to include InstallmentPayments and ActivationPayments
-    include_ip = (not category or category == "deposit") and (not flow_type or flow_type == "inflow")
-    include_ap = (not category or category == "activation") and (not flow_type or flow_type == "inflow")
+    inflow_types = list(applicable_types & _INFLOW_TYPES)
+    outflow_types = list(applicable_types & _OUTFLOW_TYPES)
 
     # Fundo de proteção — always unfiltered wallet total
     fg_result = await session.execute(
@@ -742,58 +726,31 @@ async def get_finance_summary(
     )
     fundo_garantidor_cents = int(fg_result.scalar() or 0)
 
-    # TransactionModel inflow
-    tx_inflow_types = list(tx_applicable & _TX_INFLOW)
-    if tx_inflow_types:
+    # Inflow
+    if inflow_types:
         r = await session.execute(
             select(func.coalesce(func.sum(TransactionModel.amount_cents), 0))
-            .where(TransactionModel.transaction_type.in_(tx_inflow_types))
+            .where(TransactionModel.transaction_type.in_(inflow_types))
             .where(TransactionModel.status == TransactionStatus.CONFIRMED.value)
-            .where(TransactionModel.created_at >= start)
-            .where(TransactionModel.created_at <= end)
+            .where(TransactionModel.confirmed_at >= start)
+            .where(TransactionModel.confirmed_at <= end)
         )
-        tx_inflow_cents = int(r.scalar() or 0)
+        total_inflow_cents = int(r.scalar() or 0)
     else:
-        tx_inflow_cents = 0
+        total_inflow_cents = 0
 
-    # TransactionModel outflow
-    tx_outflow_types = list(tx_applicable & _TX_OUTFLOW)
-    if tx_outflow_types:
+    # Outflow
+    if outflow_types:
         r = await session.execute(
             select(func.coalesce(func.sum(TransactionModel.amount_cents), 0))
-            .where(TransactionModel.transaction_type.in_(tx_outflow_types))
+            .where(TransactionModel.transaction_type.in_(outflow_types))
             .where(TransactionModel.status == TransactionStatus.CONFIRMED.value)
-            .where(TransactionModel.created_at >= start)
-            .where(TransactionModel.created_at <= end)
+            .where(TransactionModel.confirmed_at >= start)
+            .where(TransactionModel.confirmed_at <= end)
         )
-        tx_outflow_cents = int(r.scalar() or 0)
+        total_outflow_cents = int(r.scalar() or 0)
     else:
-        tx_outflow_cents = 0
-
-    # InstallmentPayments inflow (new subscription deposit flow; filter by confirmed_at)
-    ip_inflow_cents = 0
-    if include_ip:
-        r = await session.execute(
-            select(func.coalesce(func.sum(InstallmentPaymentModel.total_amount_cents), 0))
-            .where(InstallmentPaymentModel.status == "confirmed")
-            .where(InstallmentPaymentModel.confirmed_at >= start)
-            .where(InstallmentPaymentModel.confirmed_at <= end)
-        )
-        ip_inflow_cents = int(r.scalar() or 0)
-
-    # ActivationPayments inflow (filter by confirmed_at)
-    ap_inflow_cents = 0
-    if include_ap:
-        r = await session.execute(
-            select(func.coalesce(func.sum(SubscriptionActivationPaymentModel.total_amount_cents), 0))
-            .where(SubscriptionActivationPaymentModel.status == "confirmed")
-            .where(SubscriptionActivationPaymentModel.confirmed_at >= start)
-            .where(SubscriptionActivationPaymentModel.confirmed_at <= end)
-        )
-        ap_inflow_cents = int(r.scalar() or 0)
-
-    total_inflow_cents = tx_inflow_cents + ip_inflow_cents + ap_inflow_cents
-    total_outflow_cents = tx_outflow_cents
+        total_outflow_cents = 0
 
     return AdminFinanceSummaryResponse(
         fundo_garantidor_cents=fundo_garantidor_cents,
@@ -817,25 +774,15 @@ async def get_finance_cash_flow(
     end_date: str = Query(..., description="Period end (YYYY-MM-DD)"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
-    category: Optional[str] = Query(None, description="Filter: deposit|withdrawal|yield|fee|fundo_garantidor|activation"),
+    category: Optional[str] = Query(None, description="Filter: deposit|withdrawal|yield|fee|fundo_garantidor|activation|installment"),
     flow_type: Optional[str] = Query(None, description="Filter by flow direction (inflow|outflow)"),
 ) -> AdminCashFlowListResponse:
     """Return paginated confirmed entries for the given period.
 
-    Aggregates three sources:
-    - TransactionModel (DEPOSIT legacy, WITHDRAWAL, YIELD, FEE, FUNDO_GARANTIDOR)
-    - InstallmentPaymentModel (new subscription installment deposits → category Depósito)
-    - SubscriptionActivationPaymentModel (activation fees → category Taxa de Ativação)
-
-    Python-side merge → sort by date → paginate. Fine for admin data volumes.
+    All data comes from the unified transactions table.
     """
     from sqlalchemy import select
-    from app.domain.entities.transaction import TransactionStatus, TransactionType
-    from app.infrastructure.db.models import (
-        InstallmentPaymentModel,
-        SubscriptionActivationPaymentModel,
-        TransactionModel,
-    )
+    from app.infrastructure.db.models import TransactionModel
 
     _CATEGORY_LABEL = {
         TransactionType.DEPOSIT.value: "Depósito",
@@ -843,94 +790,68 @@ async def get_finance_cash_flow(
         TransactionType.YIELD.value: "Rendimento",
         TransactionType.FEE.value: "Taxa",
         TransactionType.FUNDO_GARANTIDOR.value: "Fundo de proteção",
+        TransactionType.SUBSCRIPTION_INSTALLMENT_PAYMENT.value: "Depósito",
+        TransactionType.SUBSCRIPTION_ACTIVATION_PAYMENT.value: "Taxa de Ativação",
     }
-    _TX_INFLOW = {TransactionType.DEPOSIT.value, TransactionType.YIELD.value}
-    _TX_OUTFLOW = {TransactionType.WITHDRAWAL.value, TransactionType.FEE.value, TransactionType.FUNDO_GARANTIDOR.value}
-    _TX_ALL = _TX_INFLOW | _TX_OUTFLOW
+    _INFLOW_TYPES = {
+        TransactionType.DEPOSIT.value,
+        TransactionType.YIELD.value,
+        TransactionType.SUBSCRIPTION_INSTALLMENT_PAYMENT.value,
+        TransactionType.SUBSCRIPTION_ACTIVATION_PAYMENT.value,
+    }
+    _OUTFLOW_TYPES = {
+        TransactionType.WITHDRAWAL.value,
+        TransactionType.FEE.value,
+        TransactionType.FUNDO_GARANTIDOR.value,
+    }
+    _CATEGORY_TO_TYPE = {
+        "deposit": TransactionType.DEPOSIT.value,
+        "withdrawal": TransactionType.WITHDRAWAL.value,
+        "yield": TransactionType.YIELD.value,
+        "fee": TransactionType.FEE.value,
+        "fundo_garantidor": TransactionType.FUNDO_GARANTIDOR.value,
+        "activation": TransactionType.SUBSCRIPTION_ACTIVATION_PAYMENT.value,
+        "installment": TransactionType.SUBSCRIPTION_INSTALLMENT_PAYMENT.value,
+    }
 
     start = datetime.strptime(start_date, "%Y-%m-%d")
     end = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
 
-    # Resolve which sources to query
-    tx_applicable = _TX_ALL.copy()
-    if category == "activation":
-        tx_applicable = set()
-    elif category and category in _TX_ALL:
-        tx_applicable = {category}
+    if category and category in _CATEGORY_TO_TYPE:
+        applicable_types = {_CATEGORY_TO_TYPE[category]}
+    else:
+        applicable_types = _INFLOW_TYPES | _OUTFLOW_TYPES
+
     if flow_type == "inflow":
-        tx_applicable &= _TX_INFLOW
+        applicable_types &= _INFLOW_TYPES
     elif flow_type == "outflow":
-        tx_applicable &= _TX_OUTFLOW
+        applicable_types &= _OUTFLOW_TYPES
 
-    include_ip = (not category or category == "deposit") and (not flow_type or flow_type == "inflow")
-    include_ap = (not category or category == "activation") and (not flow_type or flow_type == "inflow")
+    tx_rows = (await session.execute(
+        select(TransactionModel)
+        .where(TransactionModel.status == TransactionStatus.CONFIRMED.value)
+        .where(TransactionModel.confirmed_at >= start)
+        .where(TransactionModel.confirmed_at <= end)
+        .where(TransactionModel.transaction_type.in_(list(applicable_types)))
+        .order_by(TransactionModel.confirmed_at.desc())
+    )).scalars().all()
 
-    all_entries: list[dict] = []
+    all_entries = [
+        {
+            "sort_dt": t.confirmed_at or t.created_at,
+            "id": str(t.id),
+            "date": (t.confirmed_at or t.created_at).isoformat(),
+            "description": (
+                t.description
+                or _CATEGORY_LABEL.get(t.transaction_type, t.transaction_type)
+            ),
+            "type": "inflow" if t.transaction_type in _INFLOW_TYPES else "outflow",
+            "amount_cents": t.amount_cents,
+            "category": _CATEGORY_LABEL.get(t.transaction_type, t.transaction_type),
+        }
+        for t in tx_rows
+    ]
 
-    # 1. TransactionModel entries
-    if tx_applicable:
-        tx_rows = (await session.execute(
-            select(TransactionModel)
-            .where(TransactionModel.status == TransactionStatus.CONFIRMED.value)
-            .where(TransactionModel.created_at >= start)
-            .where(TransactionModel.created_at <= end)
-            .where(TransactionModel.transaction_type.in_(list(tx_applicable)))
-        )).scalars().all()
-
-        for t in tx_rows:
-            all_entries.append({
-                "sort_dt": t.created_at,
-                "id": str(t.id),
-                "date": t.created_at.isoformat(),
-                "description": t.description or _CATEGORY_LABEL.get(t.transaction_type, t.transaction_type),
-                "type": "inflow" if t.transaction_type in _TX_INFLOW else "outflow",
-                "amount_cents": t.amount_cents,
-                "category": _CATEGORY_LABEL.get(t.transaction_type, t.transaction_type),
-            })
-
-    # 2. InstallmentPayments (new subscription deposit flow; date = confirmed_at)
-    if include_ip:
-        ip_rows = (await session.execute(
-            select(InstallmentPaymentModel)
-            .where(InstallmentPaymentModel.status == "confirmed")
-            .where(InstallmentPaymentModel.confirmed_at >= start)
-            .where(InstallmentPaymentModel.confirmed_at <= end)
-        )).scalars().all()
-
-        for ip in ip_rows:
-            dt = ip.confirmed_at or ip.created_at
-            all_entries.append({
-                "sort_dt": dt,
-                "id": str(ip.id),
-                "date": dt.isoformat(),
-                "description": "Pagamento de parcela",
-                "type": "inflow",
-                "amount_cents": ip.total_amount_cents,
-                "category": "Depósito",
-            })
-
-    # 3. ActivationPayments (date = confirmed_at)
-    if include_ap:
-        ap_rows = (await session.execute(
-            select(SubscriptionActivationPaymentModel)
-            .where(SubscriptionActivationPaymentModel.status == "confirmed")
-            .where(SubscriptionActivationPaymentModel.confirmed_at >= start)
-            .where(SubscriptionActivationPaymentModel.confirmed_at <= end)
-        )).scalars().all()
-
-        for ap in ap_rows:
-            dt = ap.confirmed_at or ap.created_at
-            all_entries.append({
-                "sort_dt": dt,
-                "id": str(ap.id),
-                "date": dt.isoformat(),
-                "description": "Taxa de ativação",
-                "type": "inflow",
-                "amount_cents": ap.total_amount_cents,
-                "category": "Taxa de Ativação",
-            })
-
-    # Sort by date descending, then paginate in Python
     all_entries.sort(key=lambda e: e["sort_dt"], reverse=True)
     total = len(all_entries)
     page_entries = all_entries[(page - 1) * page_size: page * page_size]
@@ -964,58 +885,34 @@ async def get_reconciliation_summary(
 ) -> AdminReconciliationSummaryResponse:
     """Return counts of deposit entries grouped by reconciliation status.
 
-    Covers all three deposit sources:
-    - TransactionModel DEPOSIT (old contract flow)
-    - InstallmentPaymentModel (new subscription flow — always conciliado when confirmed via Pix)
-    - SubscriptionActivationPaymentModel (always conciliado when confirmed)
+    Covers all payment types from the unified transactions table:
+    - DEPOSIT (legacy contract flow)
+    - SUBSCRIPTION_INSTALLMENT_PAYMENT
+    - SUBSCRIPTION_ACTIVATION_PAYMENT
 
     - conciliado: confirmed with a pix_transaction_id.
     - divergente: confirmed without a pix_transaction_id (manual/system).
-    - pendente: not yet confirmed (pending/failed/cancelled).
+    - pendente: not yet confirmed (pending/failed/cancelled/expired).
     """
-    from sqlalchemy import func, select
-    from app.domain.entities.transaction import TransactionStatus, TransactionType
-    from app.infrastructure.db.models import (
-        InstallmentPaymentModel,
-        SubscriptionActivationPaymentModel,
-        TransactionModel,
-    )
+    from sqlalchemy import select
+    from app.infrastructure.db.models import TransactionModel
+
+    payment_types = [
+        TransactionType.DEPOSIT.value,
+        TransactionType.SUBSCRIPTION_INSTALLMENT_PAYMENT.value,
+        TransactionType.SUBSCRIPTION_ACTIVATION_PAYMENT.value,
+    ]
+
+    rows = (await session.execute(
+        select(TransactionModel.status, TransactionModel.pix_transaction_id)
+        .where(TransactionModel.transaction_type.in_(payment_types))
+    )).all()
 
     conciliado = pendente = divergente = 0
-
-    # TransactionModel DEPOSIT entries (legacy flow)
-    tx_rows = (await session.execute(
-        select(TransactionModel.status, TransactionModel.pix_transaction_id)
-        .where(TransactionModel.transaction_type == TransactionType.DEPOSIT.value)
-    )).all()
-    for row_status, pix_tx_id in tx_rows:
-        if pix_tx_id:
+    for row_status, pix_tx_id in rows:
+        if pix_tx_id and row_status == TransactionStatus.CONFIRMED.value:
             conciliado += 1
         elif row_status == TransactionStatus.CONFIRMED.value:
-            divergente += 1
-        else:
-            pendente += 1
-
-    # InstallmentPayments — confirmed ones always have pix_transaction_id
-    ip_counts = (await session.execute(
-        select(InstallmentPaymentModel.status, InstallmentPaymentModel.pix_transaction_id)
-    )).all()
-    for ip_status, ip_pix_id in ip_counts:
-        if ip_pix_id and ip_status == "confirmed":
-            conciliado += 1
-        elif ip_status == "confirmed":
-            divergente += 1
-        else:
-            pendente += 1
-
-    # ActivationPayments
-    ap_counts = (await session.execute(
-        select(SubscriptionActivationPaymentModel.status, SubscriptionActivationPaymentModel.pix_transaction_id)
-    )).all()
-    for ap_status, ap_pix_id in ap_counts:
-        if ap_pix_id and ap_status == "confirmed":
-            conciliado += 1
-        elif ap_status == "confirmed":
             divergente += 1
         else:
             pendente += 1

@@ -26,13 +26,12 @@ class PrincipalDepositRepository:
         return self._to_entity(model) if model else None
 
     async def get_by_item_id(
-        self, installment_payment_item_id: UUID
+        self, transaction_item_id: UUID
     ) -> Optional[PrincipalDeposit]:
-        """Get principal deposit by installment payment item ID (unique)."""
+        """Get principal deposit by transaction item ID (unique)."""
         result = await self._session.execute(
             select(PrincipalDepositModel).where(
-                PrincipalDepositModel.installment_payment_item_id
-                == installment_payment_item_id
+                PrincipalDepositModel.transaction_item_id == transaction_item_id
             )
         )
         model = result.scalar_one_or_none()
@@ -46,12 +45,6 @@ class PrincipalDepositRepository:
         Returns deposits where:
         - last_yield_run_date is NULL (never processed), OR
         - last_yield_run_date < before_date (processed before the target date)
-
-        Args:
-            before_date: Process deposits not yet run on or after this date.
-
-        Returns:
-            List of PrincipalDeposit entities ordered by deposited_at ascending.
         """
         result = await self._session.execute(
             select(PrincipalDepositModel)
@@ -87,7 +80,7 @@ class PrincipalDepositRepository:
             id=model.id,
             user_id=model.user_id,
             subscription_id=model.subscription_id,
-            installment_payment_item_id=model.installment_payment_item_id,
+            transaction_item_id=model.transaction_item_id,
             installment_number=model.installment_number,
             principal_cents=model.principal_cents,
             deposited_at=model.deposited_at
@@ -106,7 +99,7 @@ class PrincipalDepositRepository:
             id=entity.id,
             user_id=entity.user_id,
             subscription_id=entity.subscription_id,
-            installment_payment_item_id=entity.installment_payment_item_id,
+            transaction_item_id=entity.transaction_item_id,
             installment_number=entity.installment_number,
             principal_cents=entity.principal_cents,
             deposited_at=entity.deposited_at,

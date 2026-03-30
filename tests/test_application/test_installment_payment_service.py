@@ -991,7 +991,7 @@ class TestLazyExpiration:
     async def test_stale_payment_expired_before_payable_list(self, test_session):
         """Pending payment older than expiration_minutes is expired lazily
         when fetching payable installments, so it no longer blocks the item."""
-        from app.infrastructure.db.models import InstallmentPaymentModel
+        from app.infrastructure.db.models import TransactionModel
 
         user = await _create_user(test_session)
         plan = await _create_plan(test_session)
@@ -1015,8 +1015,8 @@ class TestLazyExpiration:
         from sqlalchemy import update as sa_update
 
         await test_session.execute(
-            sa_update(InstallmentPaymentModel)
-            .where(InstallmentPaymentModel.id == payment.id)
+            sa_update(TransactionModel)
+            .where(TransactionModel.id == payment.id)
             .values(created_at=datetime.utcnow() - timedelta(minutes=31))
         )
         await test_session.commit()
@@ -1028,7 +1028,7 @@ class TestLazyExpiration:
     @pytest.mark.asyncio
     async def test_stale_payment_expired_in_history(self, test_session):
         """Stale payments appear as 'expired' in history after lazy expiration."""
-        from app.infrastructure.db.models import InstallmentPaymentModel
+        from app.infrastructure.db.models import TransactionModel
 
         user = await _create_user(test_session)
         plan = await _create_plan(test_session)
@@ -1048,8 +1048,8 @@ class TestLazyExpiration:
         from sqlalchemy import update as sa_update
 
         await test_session.execute(
-            sa_update(InstallmentPaymentModel)
-            .where(InstallmentPaymentModel.user_id == user.id)
+            sa_update(TransactionModel)
+            .where(TransactionModel.user_id == user.id)
             .values(created_at=datetime.utcnow() - timedelta(minutes=31))
         )
         await test_session.commit()
@@ -1063,7 +1063,7 @@ class TestLazyExpiration:
     @pytest.mark.asyncio
     async def test_get_payment_expires_stale_payment(self, test_session):
         """get_payment lazily expires a stale pending payment."""
-        from app.infrastructure.db.models import InstallmentPaymentModel
+        from app.infrastructure.db.models import TransactionModel
 
         user = await _create_user(test_session)
         plan = await _create_plan(test_session)
@@ -1084,8 +1084,8 @@ class TestLazyExpiration:
         from sqlalchemy import update as sa_update
 
         await test_session.execute(
-            sa_update(InstallmentPaymentModel)
-            .where(InstallmentPaymentModel.id == created.id)
+            sa_update(TransactionModel)
+            .where(TransactionModel.id == created.id)
             .values(created_at=datetime.utcnow() - timedelta(minutes=31))
         )
         await test_session.commit()
@@ -1121,7 +1121,7 @@ class TestLazyExpiration:
     @pytest.mark.asyncio
     async def test_confirmed_payment_not_expired(self, test_session):
         """A confirmed payment is never expired, even if old."""
-        from app.infrastructure.db.models import InstallmentPaymentModel
+        from app.infrastructure.db.models import TransactionModel
 
         user = await _create_user(test_session)
         plan = await _create_plan(test_session)
@@ -1142,8 +1142,8 @@ class TestLazyExpiration:
         from sqlalchemy import update as sa_update
 
         await test_session.execute(
-            sa_update(InstallmentPaymentModel)
-            .where(InstallmentPaymentModel.id == created.id)
+            sa_update(TransactionModel)
+            .where(TransactionModel.id == created.id)
             .values(created_at=datetime.utcnow() - timedelta(hours=24))
         )
         await test_session.commit()
@@ -1154,7 +1154,7 @@ class TestLazyExpiration:
     @pytest.mark.asyncio
     async def test_expired_payment_allows_new_payment(self, test_session):
         """After a payment expires, user can create a new one for the same sub."""
-        from app.infrastructure.db.models import InstallmentPaymentModel
+        from app.infrastructure.db.models import TransactionModel
 
         user = await _create_user(test_session)
         plan = await _create_plan(test_session)
@@ -1174,8 +1174,8 @@ class TestLazyExpiration:
         from sqlalchemy import update as sa_update
 
         await test_session.execute(
-            sa_update(InstallmentPaymentModel)
-            .where(InstallmentPaymentModel.id == first.id)
+            sa_update(TransactionModel)
+            .where(TransactionModel.id == first.id)
             .values(created_at=datetime.utcnow() - timedelta(minutes=31))
         )
         await test_session.commit()

@@ -1,7 +1,8 @@
 """Principal Deposit entity - Domain model for per-installment principal tracking.
 
-Each confirmed installment payment item produces one PrincipalDeposit.
-The deposited_at date is the anchor for poupança anniversary yield calculation.
+Each confirmed SUBSCRIPTION_INSTALLMENT_PAYMENT TransactionItem produces one
+PrincipalDeposit. The deposited_at date is the anchor for poupança anniversary
+yield calculation.
 
 Idempotency design:
   last_yield_run_date tracks the last date the yield job ran for this deposit.
@@ -28,7 +29,7 @@ class PrincipalDeposit:
     id: UUID
     user_id: UUID
     subscription_id: UUID
-    installment_payment_item_id: UUID  # UNIQUE — one deposit per payment item
+    transaction_item_id: UUID  # UNIQUE — one deposit per transaction item
     installment_number: int
     principal_cents: int  # investment_amount from InstallmentCalculator
     deposited_at: date  # confirmation date — poupança anniversary anchor
@@ -40,17 +41,17 @@ class PrincipalDeposit:
         cls,
         user_id: UUID,
         subscription_id: UUID,
-        installment_payment_item_id: UUID,
+        transaction_item_id: UUID,
         installment_number: int,
         principal_cents: int,
         deposited_at: date,
-    ) -> PrincipalDeposit:
+    ) -> "PrincipalDeposit":
         """Factory method to create a new principal deposit record."""
         return cls(
             id=uuid4(),
             user_id=user_id,
             subscription_id=subscription_id,
-            installment_payment_item_id=installment_payment_item_id,
+            transaction_item_id=transaction_item_id,
             installment_number=installment_number,
             principal_cents=principal_cents,
             deposited_at=deposited_at,

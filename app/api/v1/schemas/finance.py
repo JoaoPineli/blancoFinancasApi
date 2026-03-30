@@ -85,11 +85,11 @@ class PixWebhookPayload(BaseModel):
     """Webhook payload from Pix gateway."""
 
     pix_id: str = Field(..., description="Pix transaction ID")
-    amount: float = Field(..., description="Amount in reais")
+    amount: float = Field(0.0, description="Amount in reais")
     status: str = Field(..., description="Payment status")
     payer_cpf: Optional[str] = Field(None, description="Payer CPF")
     payer_name: Optional[str] = Field(None, description="Payer name")
-    timestamp: str = Field(..., description="Event timestamp ISO format")
+    timestamp: Optional[str] = Field(None, description="Event timestamp ISO format")
 
 
 # ------------------------------------------------------------------
