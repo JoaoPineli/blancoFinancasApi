@@ -30,6 +30,7 @@ from app.infrastructure.db.repositories.audit_log_repository import AuditLogRepo
 from app.infrastructure.db.repositories.plan_repository import PlanRepository
 from app.infrastructure.db.repositories.subscription_repository import SubscriptionRepository
 from app.infrastructure.db.repositories.transaction_repository import TransactionRepository
+from app.infrastructure.db.repositories.user_repository import UserRepository
 from app.infrastructure.payment.pix_gateway import PixGatewayAdapter
 
 _DEFAULT_TZ = zoneinfo.ZoneInfo("America/Sao_Paulo")
@@ -49,6 +50,7 @@ class SubscriptionActivationPaymentService:
         self._subscription_repo = SubscriptionRepository(session)
         self._plan_repo = PlanRepository(session)
         self._audit_repo = AuditLogRepository(session)
+        self._user_repo = UserRepository(session)
         self._pix_gateway = PixGatewayAdapter()
 
     # ------------------------------------------------------------------
@@ -114,24 +116,16 @@ class SubscriptionActivationPaymentService:
         plan_title = plan.title
         sub_name = sub.name or plan_title
 
-        from uuid import uuid4
-
-        temp_id = uuid4()
-        pix_payload = self._pix_gateway.create_payment(
-            internal_transaction_id=temp_id,
-            amount_cents=total_cents,
-            description=f"Ativação - {sub_name}",
-        )
-
+        # Persist first to obtain the real UUID, then call MP
         transaction = Transaction.create_activation_payment(
             user_id=input_data.user_id,
             subscription_id=input_data.subscription_id,
             admin_tax_cents=admin_tax_cents,
             insurance_cents=insurance_cents,
             pix_transaction_fee_cents=pix_fee_cents,
-            pix_qr_code_data=pix_payload.qr_code_data,
-            expiration_minutes=pix_payload.expiration_minutes,
-            pix_transaction_id=pix_payload.transaction_id,
+            pix_qr_code_data="",
+            expiration_minutes=30,
+            pix_transaction_id=None,
         )
 
         item = TransactionItem.create(
@@ -144,6 +138,22 @@ class SubscriptionActivationPaymentService:
         )
 
         saved = await self._transaction_repo.save_with_items(transaction, [item])
+
+        # Load payer email for MP order
+        user = await self._user_repo.get_by_id(input_data.user_id)
+        payer_email = user.email.value if user else "pagador@testuser.com"
+
+        pix_payload = await self._pix_gateway.create_payment(
+            internal_transaction_id=saved.id,
+            amount_cents=total_cents,
+            description=f"Ativação - {sub_name}",
+            payer_email=payer_email,
+        )
+
+        saved.pix_transaction_id = pix_payload.transaction_id
+        saved.pix_qr_code_data = pix_payload.qr_code_data
+        saved.expiration_minutes = pix_payload.expiration_minutes
+        await self._transaction_repo.save(saved)
 
         audit = AuditLog.create(
             action=AuditAction.SUBSCRIPTION_ACTIVATION_PAYMENT_CREATED,

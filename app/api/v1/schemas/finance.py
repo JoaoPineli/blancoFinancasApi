@@ -92,6 +92,20 @@ class PixWebhookPayload(BaseModel):
     timestamp: Optional[str] = Field(None, description="Event timestamp ISO format")
 
 
+class MercadoPagoWebhookData(BaseModel):
+    """'data' object inside Mercado Pago webhook notification body."""
+
+    id: Optional[str] = Field(None, description="Resource ID")
+
+
+class MercadoPagoWebhookPayload(BaseModel):
+    """Mercado Pago webhook notification body (minimal — reconciliation uses GET /orders/{id})."""
+
+    type: Optional[str] = Field(None, description="Notification type (e.g. 'order')")
+    action: Optional[str] = Field(None, description="Event action")
+    data: Optional[MercadoPagoWebhookData] = Field(None, description="Resource data")
+
+
 # ------------------------------------------------------------------
 # Installment Payment Schemas
 # ------------------------------------------------------------------

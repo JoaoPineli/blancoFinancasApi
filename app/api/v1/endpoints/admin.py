@@ -1,11 +1,14 @@
 """Admin endpoints for platform administration."""
 
-from datetime import datetime
+import hashlib
+import hmac as _hmac
+from datetime import datetime, timezone
+from decimal import ROUND_HALF_UP, Decimal
 from io import BytesIO
 from typing import List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 
 from app.api.v1.dependencies import CurrentAdmin, DbSession
@@ -25,6 +28,7 @@ from app.api.v1.schemas.finance import (
     AdminWithdrawalListResponse,
     AdminWithdrawalResponse,
     ApproveWithdrawalRequest,
+    MercadoPagoWebhookPayload,
     NotificationListResponse,
     NotificationResponse,
     PixWebhookPayload,
@@ -654,6 +658,213 @@ async def pix_webhook(
         return {"status": "ignored", "pix_status": payload.status}
 
     return {"status": "ignored", "pix_status": payload.status, "transaction_type": tx_type.value}
+
+
+@router.post(
+    "/webhooks/mercadopago",
+    status_code=status.HTTP_200_OK,
+    summary="Mercado Pago webhook (signature-validated, GET order for reconciliation)",
+)
+async def mercadopago_webhook(
+    request: Request,
+    session: DbSession,
+    _body: MercadoPagoWebhookPayload,  # noqa: ARG001 — parsed for OpenAPI docs only
+    data_id: Optional[str] = Query(None, alias="data.id"),
+    type_param: Optional[str] = Query(None, alias="type"),  # noqa: ARG001
+) -> dict:
+    """Handle Mercado Pago payment webhook.
+
+    Security flow:
+      1. Validate x-signature HMAC-SHA256 with timestamp tolerance.
+      2. GET /v1/orders/{id} to verify status (never trust body alone).
+      3. Reconcile: pix_transaction_id lookup first, then external_reference fallback.
+      4. Validate amount (Decimal, no float).
+      5. Dispatch by transaction_type (idempotent).
+    """
+    import httpx as _httpx
+    from app.infrastructure.config import get_settings
+    from app.infrastructure.payment.pix_gateway import PixGatewayAdapter
+
+    cfg = get_settings()
+
+    # ---- 1. Signature validation ----------------------------------------
+    x_signature = request.headers.get("x-signature", "")
+    x_request_id = request.headers.get("x-request-id", "")
+
+    if not x_signature or not data_id:
+        raise HTTPException(status_code=401, detail="Missing x-signature or data.id")
+
+    ts = ""
+    v1_hash = ""
+    for part in x_signature.split(","):
+        k, _, v = part.strip().partition("=")
+        if k == "ts":
+            ts = v
+        elif k == "v1":
+            v1_hash = v
+
+    if not ts or not v1_hash:
+        raise HTTPException(status_code=401, detail="Malformed x-signature header")
+
+    try:
+        ts_seconds = int(ts)
+        now_seconds = datetime.now(timezone.utc).timestamp()
+        if abs(now_seconds - ts_seconds) > cfg.mercadopago_webhook_tolerance_seconds:
+            raise HTTPException(status_code=401, detail="Webhook timestamp out of tolerance")
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid ts in x-signature")
+
+    manifest = f"id:{data_id};request-id:{x_request_id};ts:{ts};"
+    secret = cfg.mercadopago_webhook_secret.get_secret_value()
+    expected = _hmac.new(
+        secret.encode("utf-8"),
+        manifest.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    if not _hmac.compare_digest(expected, v1_hash):
+        if cfg.environment == "development":
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "MP webhook: signature mismatch ignored in development mode "
+                "(ngrok may be replacing X-Request-Id). "
+                "manifest=%r | expected=%s | received=%s",
+                manifest, expected, v1_hash,
+            )
+        else:
+            raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
+    # ---- 2. Fetch order from MP ------------------------------------------
+    gateway = PixGatewayAdapter()
+    try:
+        order_data = await gateway.get_order(data_id)
+    except _httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            # Order not found on MP (e.g. simulation with fake ID) — acknowledge and stop.
+            return {"status": "order_not_found", "order_id": data_id}
+        # Other MP API errors: return 200 so MP does not keep retrying this notification.
+        return {"status": "mp_api_error", "order_id": data_id, "http_status": exc.response.status_code}
+    except Exception:
+        # Network / timeout errors: return 200 to avoid infinite MP retries.
+        return {"status": "gateway_unavailable", "order_id": data_id}
+
+    order_id = str(order_data.get("id", data_id))
+    external_reference = order_data.get("external_reference", "")
+    order_status = order_data.get("status", "")
+
+    # ---- 3. Locate transaction -------------------------------------------
+    transaction_repo = TransactionRepository(session)
+    transaction = await transaction_repo.get_by_pix_transaction_id(order_id)
+
+    if not transaction and external_reference:
+        try:
+            internal_id = UUID(hex=external_reference)
+            transaction = await transaction_repo.get_by_id(internal_id)
+        except (ValueError, AttributeError):
+            pass
+
+    if not transaction:
+        return {"status": "unknown_transaction", "order_id": order_id}
+
+    # Heal: record the MP order_id if found via fallback
+    if transaction.pix_transaction_id != order_id:
+        transaction.pix_transaction_id = order_id
+        await transaction_repo.save(transaction)
+
+    # ---- 4. Amount validation (Decimal, no float) -----------------------
+    order_total_str = str(order_data.get("total_amount", "0"))
+    try:
+        order_amount = Decimal(order_total_str).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        tx_amount = (Decimal(transaction.amount_cents) / Decimal(100)).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+    except Exception:
+        await session.commit()
+        return {"status": "invalid_amount", "order_id": order_id}
+
+    if order_amount != tx_amount:
+        await session.commit()
+        return {
+            "status": "amount_mismatch",
+            "order_id": order_id,
+            "expected": str(tx_amount),
+            "received": str(order_amount),
+        }
+
+    # ---- 5. Derive action from order/payment status ---------------------
+    payments_list = order_data.get("transactions", {}).get("payments", [])
+    payment_obj = payments_list[0] if payments_list else {}
+    payment_status = payment_obj.get("status", "")
+
+    is_confirmed = order_status == "closed" and payment_status == "processed"
+    is_failed = payment_status == "failed"
+    is_expired = order_status == "expired"
+    is_cancelled = order_status == "canceled"
+
+    tx_type = transaction.transaction_type
+
+    # ---- 6. Dispatch (idempotent) ----------------------------------------
+    if is_confirmed:
+        if transaction.status == TransactionStatus.CONFIRMED:
+            await session.commit()
+            return {"status": "already_confirmed", "transaction_id": str(transaction.id)}
+
+        if tx_type == TransactionType.DEPOSIT:
+            service = CreateDepositService(session)
+            await service.confirm_deposit(
+                transaction_id=transaction.id,
+                pix_transaction_id=order_id,
+            )
+        elif tx_type == TransactionType.SUBSCRIPTION_INSTALLMENT_PAYMENT:
+            service_inst = InstallmentPaymentService(session)
+            await service_inst.confirm_payment(
+                payment_id=transaction.id,
+                pix_transaction_id=order_id,
+            )
+        elif tx_type == TransactionType.SUBSCRIPTION_ACTIVATION_PAYMENT:
+            from app.application.services.subscription_activation_payment_service import (
+                SubscriptionActivationPaymentService,
+            )
+            svc_act = SubscriptionActivationPaymentService(session)
+            await svc_act.confirm_payment(
+                payment_id=transaction.id,
+                pix_transaction_id=order_id,
+            )
+        else:
+            await session.commit()
+            return {"status": "ignored", "transaction_type": tx_type.value}
+
+        return {"status": "confirmed", "transaction_id": str(transaction.id)}
+
+    if is_failed:
+        if transaction.status == TransactionStatus.PENDING:
+            transaction.fail()
+            await transaction_repo.save(transaction)
+        await session.commit()
+        return {"status": "failed", "transaction_id": str(transaction.id)}
+
+    if is_expired:
+        if transaction.status == TransactionStatus.PENDING:
+            transaction.expire()
+            await transaction_repo.save(transaction)
+        await session.commit()
+        return {"status": "expired", "transaction_id": str(transaction.id)}
+
+    if is_cancelled:
+        if transaction.status == TransactionStatus.PENDING:
+            transaction.cancel()
+            await transaction_repo.save(transaction)
+        await session.commit()
+        return {"status": "cancelled", "transaction_id": str(transaction.id)}
+
+    await session.commit()
+    return {
+        "status": "pending",
+        "transaction_id": str(transaction.id),
+        "order_status": order_status,
+    }
 
 
 # ============================================================================

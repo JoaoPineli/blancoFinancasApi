@@ -1,125 +1,180 @@
-"""Pix gateway adapter for payment processing.
+"""Pix gateway adapter — Mercado Pago Orders API integration.
 
-This adapter handles:
-- QR Code payload generation
-- Payment reconciliation via webhooks
+Replaces the local BR Code generator with real Mercado Pago Checkout API Orders (Pix).
+All HTTP calls are async via httpx.AsyncClient.
+All monetary values are handled via Decimal (no float).
 """
 
 from dataclasses import dataclass
-from datetime import datetime
-from decimal import Decimal
+from datetime import datetime, timezone
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 from uuid import UUID, uuid4
+
+import httpx
 
 
 @dataclass
 class PixPayload:
-    """Pix payment payload for QR Code generation."""
+    """Pix payment payload returned by Mercado Pago Orders API."""
 
-    transaction_id: str
-    amount_cents: int
-    recipient_key: str
-    recipient_name: str
-    description: str
-    expiration_minutes: int = 30
-
-    @property
-    def qr_code_data(self) -> str:
-        """Generate BR Code (Pix QR Code) payload.
-
-        Note: This is a simplified implementation.
-        Production should use proper EMV QR Code library.
-        """
-        amount = Decimal(self.amount_cents) / Decimal(100)
-        return (
-            f"00020126580014br.gov.bcb.pix"
-            f"01{len(self.recipient_key):02d}{self.recipient_key}"
-            f"52040000"
-            f"5303986"
-            f"54{len(f'{amount:.2f}'):02d}{amount:.2f}"
-            f"5802BR"
-            f"59{len(self.recipient_name):02d}{self.recipient_name}"
-            f"60{len('SAO PAULO'):02d}SAO PAULO"
-            f"62{len(self.transaction_id) + 4:02d}05{len(self.transaction_id):02d}{self.transaction_id}"
-            f"6304"
-        )
-
-
-@dataclass
-class PixWebhookEvent:
-    """Pix webhook event from payment gateway."""
-
-    event_id: str
-    pix_transaction_id: str
-    amount_cents: int
-    status: str  # "confirmed", "failed", "refunded"
-    payer_cpf: Optional[str]
-    payer_name: Optional[str]
-    received_at: datetime
+    transaction_id: str         # MP order_id → stored as pix_transaction_id
+    qr_code_data: str           # MP qr_code (Pix copia-e-cola)
+    expiration_minutes: int
+    qr_code_base64: Optional[str] = None
+    ticket_url: Optional[str] = None
+    e2e_id: Optional[str] = None
 
 
 class PixGatewayAdapter:
-    """Adapter for Pix payment gateway integration.
+    """Adapter for Mercado Pago Orders API (Pix payments).
 
-    Handles payment creation and webhook reconciliation.
+    Provides create_payment and get_order as async methods.
+    Tokens are read from settings and never logged.
     """
 
-    def __init__(
-        self,
-        recipient_key: str = "placeholder@pix.blanco.com",
-        recipient_name: str = "BLANCO FINANCAS",
-    ) -> None:
-        """Initialize Pix gateway adapter.
+    def __init__(self) -> None:
+        from app.infrastructure.config import get_settings
+        self._settings = get_settings()
 
-        Args:
-            recipient_key: Pix key for receiving payments
-            recipient_name: Recipient name for QR Code
-        """
-        self._recipient_key = recipient_key
-        self._recipient_name = recipient_name
-
-    def create_payment(
+    async def create_payment(
         self,
         internal_transaction_id: UUID,
         amount_cents: int,
         description: str,
+        payer_email: str = "",
     ) -> PixPayload:
-        """Create a Pix payment payload for QR Code generation.
+        """Create a Pix payment order via Mercado Pago Orders API.
 
         Args:
-            internal_transaction_id: Internal transaction UUID
-            amount_cents: Payment amount in cents
+            internal_transaction_id: Internal transaction UUID; used as external_reference (hex)
+            amount_cents: Amount in cents (integer — no float arithmetic)
             description: Payment description
+            payer_email: Payer email. In sandbox, must be a test user email registered in MP.
+                         Falls back to MERCADOPAGO_TEST_PAYER_EMAIL from settings if empty.
 
         Returns:
-            PixPayload for QR Code generation
+            PixPayload with real QR code data and MP order_id as transaction_id
         """
-        # Generate unique transaction ID for Pix
-        pix_transaction_id = f"BF{internal_transaction_id.hex[:20].upper()}"
+        access_token = self._settings.mercadopago_access_token.get_secret_value()
+        base_url = self._settings.mercadopago_api_base_url
 
-        return PixPayload(
-            transaction_id=pix_transaction_id,
-            amount_cents=amount_cents,
-            recipient_key=self._recipient_key,
-            recipient_name=self._recipient_name,
-            description=description,
+        # In sandbox, mercadopago_test_payer_email overrides any real user email.
+        # In production this setting is empty, so the real email is used.
+        test_email = self._settings.mercadopago_test_payer_email
+        is_sandbox = bool(test_email)
+        if test_email:
+            payer_email = test_email
+        elif not payer_email:
+            payer_email = ""
+        idempotency_key = str(uuid4())
+        external_reference = internal_transaction_id.hex
+
+        # Convert cents → "500.00" string via Decimal — never float
+        amount_str = str(
+            (Decimal(amount_cents) / Decimal(100)).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
         )
 
-    def parse_webhook(self, payload: dict) -> PixWebhookEvent:
-        """Parse incoming webhook from Pix gateway.
+        payer: dict = {"email": payer_email}
+        if is_sandbox:
+            # "APRO" as first_name triggers automatic payment approval in MP sandbox.
+            payer["first_name"] = "APRO"
+
+        body: dict = {
+            "type": "online",
+            "external_reference": external_reference,
+            "total_amount": amount_str,
+            "payer": payer,
+            "transactions": {
+                "payments": [
+                    {
+                        "amount": amount_str,
+                        "payment_method": {
+                            "id": "pix",
+                            "type": "bank_transfer",
+                        },
+                    }
+                ]
+            },
+        }
+        async with httpx.AsyncClient() as http:
+            response = await http.post(
+                f"{base_url}/v1/orders",
+                json=body,
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "X-Idempotency-Key": idempotency_key,
+                    "Content-Type": "application/json",
+                },
+                timeout=30.0,
+            )
+            if response.status_code >= 400:
+                import logging
+                logging.getLogger(__name__).error(
+                    "MP create_order error %s — body sent: %s — response: %s",
+                    response.status_code,
+                    body,
+                    response.text,
+                )
+            response.raise_for_status()
+            data = response.json()
+
+        return self._parse_order_response(data)
+
+    async def get_order(self, order_id: str) -> dict:
+        """Fetch a full order from Mercado Pago for reconciliation.
 
         Args:
-            payload: Raw webhook payload
+            order_id: Mercado Pago order ID
 
         Returns:
-            Parsed PixWebhookEvent
+            Raw order response dict (contains status, total_amount, transactions, etc.)
         """
-        return PixWebhookEvent(
-            event_id=payload.get("event_id", str(uuid4())),
-            pix_transaction_id=payload["pix_id"],
-            amount_cents=int(payload["amount"] * 100),
-            status=payload["status"],
-            payer_cpf=payload.get("payer_cpf"),
-            payer_name=payload.get("payer_name"),
-            received_at=datetime.fromisoformat(payload["timestamp"]),
+        access_token = self._settings.mercadopago_access_token.get_secret_value()
+        base_url = self._settings.mercadopago_api_base_url
+
+        async with httpx.AsyncClient() as http:
+            response = await http.get(
+                f"{base_url}/v1/orders/{order_id}",
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=30.0,
+            )
+            response.raise_for_status()
+            return response.json()
+
+    def _parse_order_response(self, data: dict) -> PixPayload:
+        """Extract PixPayload from a Mercado Pago order response dict."""
+        order_id = str(data["id"])
+
+        payments = data.get("transactions", {}).get("payments", [])
+        payment = payments[0] if payments else {}
+        payment_method = payment.get("payment_method", {})
+
+        qr_code = payment_method.get("qr_code", "")
+        qr_code_base64 = payment_method.get("qr_code_base64")
+        ticket_url = payment_method.get("ticket_url")
+        e2e_id = payment_method.get("e2e_id")
+
+        expiration_minutes = 30
+        date_of_expiration = payment.get("date_of_expiration")
+        if date_of_expiration:
+            try:
+                exp_dt = datetime.fromisoformat(
+                    date_of_expiration.replace("Z", "+00:00")
+                )
+                now_utc = datetime.now(timezone.utc)
+                delta = int((exp_dt - now_utc).total_seconds() / 60)
+                expiration_minutes = max(1, delta)
+            except (ValueError, TypeError):
+                expiration_minutes = 30
+
+        return PixPayload(
+            transaction_id=order_id,
+            qr_code_data=qr_code,
+            expiration_minutes=expiration_minutes,
+            qr_code_base64=qr_code_base64,
+            ticket_url=ticket_url,
+            e2e_id=e2e_id,
         )

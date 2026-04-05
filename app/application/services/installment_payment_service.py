@@ -197,31 +197,25 @@ class InstallmentPaymentService:
             )
 
         from app.domain.constants import calculate_pix_fee
-        from uuid import uuid4
 
         base_total_cents = sum(item["amount_cents"] for item in items_data)
         pix_fee_cents = calculate_pix_fee(base_total_cents)
         total_cents = base_total_cents + pix_fee_cents
 
-        temp_id = uuid4()
         item_count = len(items_data)
         description = (
             f"Blanco Financas - {item_count} "
             f"{'parcela' if item_count == 1 else 'parcelas'}"
         )
-        pix_payload = self._pix_gateway.create_payment(
-            internal_transaction_id=temp_id,
-            amount_cents=total_cents,
-            description=description,
-        )
 
+        # Persist first to obtain the real UUID, then call MP
         transaction = Transaction.create_installment_payment(
             user_id=input_data.user_id,
             total_amount_cents=total_cents,
-            pix_qr_code_data=pix_payload.qr_code_data,
-            expiration_minutes=pix_payload.expiration_minutes,
-            pix_transaction_fee_cents=pix_fee_cents,
-            pix_transaction_id=pix_payload.transaction_id,
+            pix_qr_code_data="",
+            expiration_minutes=30,
+            pix_transaction_fee_cents=0,
+            pix_transaction_id=None,
         )
 
         items = [
@@ -237,6 +231,22 @@ class InstallmentPaymentService:
         ]
 
         saved = await self._transaction_repo.save_with_items(transaction, items)
+
+        # Load payer email for MP order
+        user = await self._user_repo.get_by_id(input_data.user_id)
+        payer_email = user.email.value if user else "pagador@testuser.com"
+
+        pix_payload = await self._pix_gateway.create_payment(
+            internal_transaction_id=saved.id,
+            amount_cents=total_cents,
+            description=description,
+            payer_email=payer_email,
+        )
+
+        saved.pix_transaction_id = pix_payload.transaction_id
+        saved.pix_qr_code_data = pix_payload.qr_code_data
+        saved.expiration_minutes = pix_payload.expiration_minutes
+        await self._transaction_repo.save(saved)
 
         audit = AuditLog.create(
             action=AuditAction.INSTALLMENT_PAYMENT_CREATED,

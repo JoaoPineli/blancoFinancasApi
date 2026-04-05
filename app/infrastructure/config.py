@@ -44,6 +44,16 @@ class Settings(BaseSettings):
     sendgrid_from_email: str
     sendgrid_from_name: str = "Blanco Finanças"
 
+    # Mercado Pago
+    mercadopago_access_token: SecretStr = SecretStr("")
+    mercadopago_webhook_secret: SecretStr = SecretStr("")
+    mercadopago_api_base_url: str = "https://api.mercadopago.com"
+    mercadopago_webhook_tolerance_seconds: int = 300
+    # Usado apenas em sandbox. Em produção o email real do usuário é passado pelo service.
+    mercadopago_test_payer_email: str = "TESTUSER9036061871183836491@testuser.com"
+    # URL pública para notificações por order. Se vazio, usa a URL do dashboard MP.
+    mercadopago_notification_url: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

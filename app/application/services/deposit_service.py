@@ -18,6 +18,7 @@ from app.infrastructure.db.repositories.audit_log_repository import AuditLogRepo
 from app.infrastructure.db.repositories.contract_repository import ContractRepository
 from app.infrastructure.db.repositories.plan_repository import PlanRepository
 from app.infrastructure.db.repositories.transaction_repository import TransactionRepository
+from app.infrastructure.db.repositories.user_repository import UserRepository
 from app.infrastructure.db.repositories.wallet_repository import WalletRepository
 from app.infrastructure.payment.pix_gateway import PixGatewayAdapter
 
@@ -33,6 +34,7 @@ class CreateDepositService:
         self._plan_repo = PlanRepository(session)
         self._wallet_repo = WalletRepository(session)
         self._audit_repo = AuditLogRepository(session)
+        self._user_repo = UserRepository(session)
         self._pix_gateway = PixGatewayAdapter()
 
     async def create_deposit(self, input_data: CreateDepositInput) -> CreateDepositResult:
@@ -69,18 +71,23 @@ class CreateDepositService:
             description=f"Parcela {input_data.installment_number}",
         )
 
-        # Save transaction
+        # Save transaction first to obtain the real UUID
         saved_transaction = await self._transaction_repo.save(transaction)
 
-        # Generate Pix payment
-        pix_payload = self._pix_gateway.create_payment(
+        # Load payer email for MP order
+        user = await self._user_repo.get_by_id(input_data.user_id)
+        payer_email = user.email.value if user else "pagador@testuser.com"
+
+        # Generate Pix payment via Mercado Pago
+        pix_payload = await self._pix_gateway.create_payment(
             internal_transaction_id=saved_transaction.id,
             amount_cents=input_data.amount_cents,
             description=f"Blanco Financas - Parcela {input_data.installment_number}",
+            payer_email=payer_email,
         )
 
-        # Update transaction with Pix key
-        saved_transaction.pix_key = pix_payload.transaction_id
+        # Store MP order_id as pix_transaction_id for reconciliation
+        saved_transaction.pix_transaction_id = pix_payload.transaction_id
         await self._transaction_repo.save(saved_transaction)
 
         # Create audit log
