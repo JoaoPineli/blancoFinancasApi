@@ -507,6 +507,7 @@ def _payment_dto_to_response(dto) -> InstallmentPaymentResponse:
         status=dto.status,
         total_amount_cents=dto.total_amount_cents,
         pix_qr_code_data=dto.pix_qr_code_data,
+        pix_qr_code_base64=dto.pix_qr_code_base64,
         pix_transaction_id=dto.pix_transaction_id,
         expiration_minutes=dto.expiration_minutes,
         items=[

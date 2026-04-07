@@ -164,6 +164,7 @@ class InstallmentPaymentResponse(BaseModel):
     status: str = Field(..., description="Payment status")
     total_amount_cents: int = Field(..., description="Total amount in cents")
     pix_qr_code_data: Optional[str] = Field(None, description="Pix QR Code payload")
+    pix_qr_code_base64: Optional[str] = Field(None, description="Pix QR Code image as base64 string")
     pix_transaction_id: Optional[str] = Field(None, description="Pix transaction ID")
     expiration_minutes: int = Field(..., description="QR Code expiration in minutes")
     items: list[InstallmentPaymentItemResponse] = Field(

@@ -181,6 +181,7 @@ class TransactionModel(Base):
     confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     # Payment-flow fields (SUBSCRIPTION_INSTALLMENT_PAYMENT / SUBSCRIPTION_ACTIVATION_PAYMENT)
     pix_qr_code_data: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    pix_qr_code_base64: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     expiration_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     pix_transaction_fee_cents: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     # Activation-payment breakdown snapshots

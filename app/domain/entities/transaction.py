@@ -72,6 +72,7 @@ class Transaction:
     confirmed_at: Optional[datetime] = None
     # Payment-flow fields (used by SUBSCRIPTION_INSTALLMENT_PAYMENT and SUBSCRIPTION_ACTIVATION_PAYMENT)
     pix_qr_code_data: Optional[str] = None
+    pix_qr_code_base64: Optional[str] = None
     expiration_minutes: Optional[int] = None
     pix_transaction_fee_cents: int = 0
     # Activation-payment breakdown snapshots (SUBSCRIPTION_ACTIVATION_PAYMENT only)

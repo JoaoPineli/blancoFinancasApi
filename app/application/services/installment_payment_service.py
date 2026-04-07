@@ -245,6 +245,7 @@ class InstallmentPaymentService:
 
         saved.pix_transaction_id = pix_payload.transaction_id
         saved.pix_qr_code_data = pix_payload.qr_code_data
+        saved.pix_qr_code_base64 = pix_payload.qr_code_base64
         saved.expiration_minutes = pix_payload.expiration_minutes
         await self._transaction_repo.save(saved)
 
@@ -560,6 +561,7 @@ class InstallmentPaymentService:
             status=transaction.status.value,
             total_amount_cents=transaction.amount_cents,
             pix_qr_code_data=transaction.pix_qr_code_data,
+            pix_qr_code_base64=transaction.pix_qr_code_base64,
             pix_transaction_id=transaction.pix_transaction_id,
             expiration_minutes=transaction.expiration_minutes or 30,
             items=[

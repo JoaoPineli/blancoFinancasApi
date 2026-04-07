@@ -137,6 +137,7 @@ class InstallmentPaymentDTO:
     status: str
     total_amount_cents: int
     pix_qr_code_data: Optional[str]
+    pix_qr_code_base64: Optional[str]
     pix_transaction_id: Optional[str]
     expiration_minutes: int
     items: List[InstallmentPaymentItemDTO]
@@ -253,6 +254,7 @@ class ActivationPaymentDTO:
     pix_transaction_fee_cents: int
     total_amount_cents: int
     pix_qr_code_data: Optional[str]
+    pix_qr_code_base64: Optional[str]
     pix_transaction_id: Optional[str]
     expiration_minutes: int
     created_at: datetime

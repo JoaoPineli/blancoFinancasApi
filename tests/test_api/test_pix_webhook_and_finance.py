@@ -190,6 +190,7 @@ class TestPixWebhook:
             _m = AsyncMock()
             _mock.return_value.__aenter__.return_value = _m
             _p = MagicMock()
+            _p.status_code = 200
             _p.json.return_value = _fake_create_resp
             _p.raise_for_status = MagicMock()
             _m.post = AsyncMock(return_value=_p)
@@ -248,6 +249,7 @@ class TestPixWebhook:
             _m = AsyncMock()
             _mock.return_value.__aenter__.return_value = _m
             _p = MagicMock()
+            _p.status_code = 200
             _p.json.return_value = _fake_create_resp
             _p.raise_for_status = MagicMock()
             _m.post = AsyncMock(return_value=_p)
@@ -300,6 +302,7 @@ class TestPixWebhook:
             _m = AsyncMock()
             _mock.return_value.__aenter__.return_value = _m
             _p = MagicMock()
+            _p.status_code = 200
             _p.json.return_value = _fake_create_resp
             _p.raise_for_status = MagicMock()
             _m.post = AsyncMock(return_value=_p)
@@ -601,17 +604,28 @@ class TestMercadoPagoWebhook:
 
     @pytest.mark.asyncio
     async def test_invalid_signature_returns_401(self, client: AsyncClient, test_session):
-        """Wrong HMAC hash → 401."""
+        """Wrong HMAC hash → 401 (enforced outside development mode)."""
+        from app.infrastructure.config import get_settings
+        real_settings = get_settings()
+
         order_id = "mp-order-002"
         rid = str(uuid4())
         ts = str(int(time.time()))
         bad_sig = f"ts={ts},v1=deadbeef0000000000000000000000000000000000000000000000000000dead"
-        resp = await client.post(
-            self.MP_URL,
-            params={"data.id": order_id},
-            json={},
-            headers={"x-signature": bad_sig, "x-request-id": rid},
+
+        mock_cfg = MagicMock()
+        mock_cfg.environment = "production"
+        mock_cfg.mercadopago_webhook_tolerance_seconds = 300
+        mock_cfg.mercadopago_webhook_secret.get_secret_value.return_value = (
+            real_settings.mercadopago_webhook_secret.get_secret_value()
         )
+        with patch("app.infrastructure.config.get_settings", return_value=mock_cfg):
+            resp = await client.post(
+                self.MP_URL,
+                params={"data.id": order_id},
+                json={},
+                headers={"x-signature": bad_sig, "x-request-id": rid},
+            )
         assert resp.status_code == 401
 
     @pytest.mark.asyncio
@@ -673,6 +687,7 @@ class TestMercadoPagoWebhook:
             mock_http = AsyncMock()
             mock_cls.return_value.__aenter__.return_value = mock_http
             mock_post = MagicMock()
+            mock_post.status_code = 200
             mock_post.json.return_value = create_resp
             mock_post.raise_for_status = MagicMock()
             mock_http.post = AsyncMock(return_value=mock_post)
@@ -754,6 +769,7 @@ class TestMercadoPagoWebhook:
             mock_http = AsyncMock()
             mock_cls.return_value.__aenter__.return_value = mock_http
             mock_post = MagicMock()
+            mock_post.status_code = 200
             mock_post.json.return_value = create_resp
             mock_post.raise_for_status = MagicMock()
             mock_http.post = AsyncMock(return_value=mock_post)
@@ -828,6 +844,7 @@ class TestMercadoPagoWebhook:
             mock_http = AsyncMock()
             mock_cls.return_value.__aenter__.return_value = mock_http
             mock_post = MagicMock()
+            mock_post.status_code = 200
             mock_post.json.return_value = create_resp
             mock_post.raise_for_status = MagicMock()
             mock_http.post = AsyncMock(return_value=mock_post)
@@ -1168,6 +1185,7 @@ class TestInstallmentServiceStoresMPData:
             mock_http = AsyncMock()
             mock_cls.return_value.__aenter__.return_value = mock_http
             mock_post = MagicMock()
+            mock_post.status_code = 200
             mock_post.json.return_value = mock_order_resp
             mock_post.raise_for_status = MagicMock()
             mock_http.post = AsyncMock(return_value=mock_post)
@@ -1227,6 +1245,7 @@ class TestInstallmentServiceStoresMPData:
             mock_http = AsyncMock()
             mock_cls.return_value.__aenter__.return_value = mock_http
             mock_post = MagicMock()
+            mock_post.status_code = 200
             mock_post.json.return_value = mock_order_resp
             mock_post.raise_for_status = MagicMock()
             mock_http.post = AsyncMock(return_value=mock_post)

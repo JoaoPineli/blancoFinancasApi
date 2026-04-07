@@ -152,6 +152,7 @@ class SubscriptionActivationPaymentService:
 
         saved.pix_transaction_id = pix_payload.transaction_id
         saved.pix_qr_code_data = pix_payload.qr_code_data
+        saved.pix_qr_code_base64 = pix_payload.qr_code_base64
         saved.expiration_minutes = pix_payload.expiration_minutes
         await self._transaction_repo.save(saved)
 
@@ -276,6 +277,7 @@ class SubscriptionActivationPaymentService:
             pix_transaction_fee_cents=tx.pix_transaction_fee_cents,
             total_amount_cents=tx.amount_cents,
             pix_qr_code_data=tx.pix_qr_code_data,
+            pix_qr_code_base64=tx.pix_qr_code_base64,
             pix_transaction_id=tx.pix_transaction_id,
             expiration_minutes=tx.expiration_minutes or 30,
             created_at=tx.created_at,

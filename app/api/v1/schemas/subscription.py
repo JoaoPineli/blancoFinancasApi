@@ -213,6 +213,7 @@ class ActivationPaymentResponse(BaseModel):
     pix_transaction_fee_cents: int = Field(..., description="Pix transaction fee (0.99%) in cents")
     total_amount_cents: int = Field(..., description="Total amount to pay (base + fee) in cents")
     pix_qr_code_data: Optional[str] = Field(None, description="Pix QR code payload for copying")
+    pix_qr_code_base64: Optional[str] = Field(None, description="Pix QR code image as base64 string")
     pix_transaction_id: Optional[str] = Field(None, description="Pix transaction ID from gateway")
     expiration_minutes: int = Field(..., description="QR code expiration in minutes")
     created_at: str = Field(..., description="Creation date (ISO format)")

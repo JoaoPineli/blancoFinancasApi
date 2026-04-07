@@ -1666,6 +1666,33 @@ async def update_plan(
         )
 
 
+@router.delete(
+    "/plans/{plan_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Soft-delete a plan",
+)
+async def delete_plan(
+    plan_id: str,
+    session: DbSession,
+    current_admin: CurrentAdmin,
+) -> None:
+    """Soft-delete a plan by marking it as deleted.
+
+    The plan is not removed from the database; it is hidden from listings
+    and cannot be subscribed to. Existing subscriptions are unaffected.
+    Admin only endpoint. Creates audit log.
+    """
+    service = PlanService(session)
+
+    try:
+        await service.delete_plan(UUID(plan_id), admin_id=current_admin.id)
+    except PlanNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Plan not found",
+        )
+
+
 # ------------------------------------------------------------------
 # Yield processing
 # ------------------------------------------------------------------

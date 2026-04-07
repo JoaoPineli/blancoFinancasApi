@@ -6,7 +6,6 @@ All monetary values are handled via Decimal (no float).
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 from uuid import UUID, uuid4
@@ -61,9 +60,9 @@ class PixGatewayAdapter:
 
         # In sandbox, mercadopago_test_payer_email overrides any real user email.
         # In production this setting is empty, so the real email is used.
-        test_email = self._settings.mercadopago_test_payer_email
-        is_sandbox = bool(test_email)
-        if test_email:
+        is_development = self._settings.environment == "development"
+        test_email = "test@testuser.com"
+        if is_development:
             payer_email = test_email
         elif not payer_email:
             payer_email = ""
@@ -78,7 +77,7 @@ class PixGatewayAdapter:
         )
 
         payer: dict = {"email": payer_email}
-        if is_sandbox:
+        if is_development:
             # "APRO" as first_name triggers automatic payment approval in MP sandbox.
             payer["first_name"] = "APRO"
 
@@ -98,6 +97,7 @@ class PixGatewayAdapter:
                     }
                 ]
             },
+            "expiration_time": "PT30M",  # ISO 8601 duration for 30 minutes
         }
         async with httpx.AsyncClient() as http:
             response = await http.post(
@@ -157,23 +157,10 @@ class PixGatewayAdapter:
         ticket_url = payment_method.get("ticket_url")
         e2e_id = payment_method.get("e2e_id")
 
-        expiration_minutes = 30
-        date_of_expiration = payment.get("date_of_expiration")
-        if date_of_expiration:
-            try:
-                exp_dt = datetime.fromisoformat(
-                    date_of_expiration.replace("Z", "+00:00")
-                )
-                now_utc = datetime.now(timezone.utc)
-                delta = int((exp_dt - now_utc).total_seconds() / 60)
-                expiration_minutes = max(1, delta)
-            except (ValueError, TypeError):
-                expiration_minutes = 30
-
         return PixPayload(
             transaction_id=order_id,
             qr_code_data=qr_code,
-            expiration_minutes=expiration_minutes,
+            expiration_minutes=30,
             qr_code_base64=qr_code_base64,
             ticket_url=ticket_url,
             e2e_id=e2e_id,
