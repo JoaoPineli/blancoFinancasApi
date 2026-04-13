@@ -59,6 +59,16 @@ class AuditAction(Enum):
     PLAN_DELETED = "plan_deleted"
     ADMIN_LOGIN = "admin_login"
 
+    # Webhook events
+    WEBHOOK_RECEIVED = "webhook_received"
+    WEBHOOK_SIGNATURE_VALID = "webhook_signature_valid"
+    WEBHOOK_SIGNATURE_INVALID = "webhook_signature_invalid"
+    WEBHOOK_AMOUNT_MISMATCH = "webhook_amount_mismatch"
+    WEBHOOK_PAYMENT_CONFIRMED = "webhook_payment_confirmed"
+    WEBHOOK_PAYMENT_FAILED = "webhook_payment_failed"
+    WEBHOOK_PAYMENT_EXPIRED = "webhook_payment_expired"
+    WEBHOOK_UNKNOWN_TRANSACTION = "webhook_unknown_transaction"
+
 
 @dataclass
 class AuditLog:

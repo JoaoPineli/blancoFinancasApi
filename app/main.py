@@ -8,17 +8,21 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_router
 from app.infrastructure.config import settings
+from app.infrastructure.scheduler.expiration_scheduler import ExpirationScheduler
 from app.infrastructure.scheduler.yield_scheduler import YieldScheduler
 
 _yield_scheduler = YieldScheduler()
+_expiration_scheduler = ExpirationScheduler()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan events."""
     await _yield_scheduler.start()
+    await _expiration_scheduler.start()
     yield
     await _yield_scheduler.stop()
+    await _expiration_scheduler.stop()
 
 
 app = FastAPI(

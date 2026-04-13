@@ -74,6 +74,10 @@ from app.infrastructure.exports.pdf_report_generator import PdfReportGenerator
 
 router = APIRouter()
 
+# Sentinel actor_id used in audit logs for system-initiated events (e.g. webhooks)
+# where no authenticated user is present.
+_SYSTEM_ACTOR_ID = UUID("00000000-0000-0000-0000-000000000001")
+
 
 @router.get(
     "/clients",
@@ -680,18 +684,35 @@ async def mercadopago_webhook(
       3. Reconcile: pix_transaction_id lookup first, then external_reference fallback.
       4. Validate amount (Decimal, no float).
       5. Dispatch by transaction_type (idempotent).
+    All phases are recorded in the audit log for full traceability.
     """
     import httpx as _httpx
     from app.infrastructure.config import get_settings
     from app.infrastructure.payment.pix_gateway import PixGatewayAdapter
 
     cfg = get_settings()
+    audit_repo = AuditLogRepository(session)
 
-    # ---- 1. Signature validation ----------------------------------------
+    # ---- 0. Record webhook receipt (always, before any validation) ------
     x_signature = request.headers.get("x-signature", "")
     x_request_id = request.headers.get("x-request-id", "")
 
+    await audit_repo.save(AuditLog.create(
+        action=AuditAction.WEBHOOK_RECEIVED,
+        actor_id=_SYSTEM_ACTOR_ID,
+        target_type="webhook",
+        details={"data_id": data_id, "x_request_id": x_request_id},
+    ))
+    await session.commit()
+
+    # ---- 1. Signature validation ----------------------------------------
     if not x_signature or not data_id:
+        await audit_repo.save(AuditLog.create(
+            action=AuditAction.WEBHOOK_SIGNATURE_INVALID,
+            actor_id=_SYSTEM_ACTOR_ID,
+            details={"reason": "Missing x-signature or data.id"},
+        ))
+        await session.commit()
         raise HTTPException(status_code=401, detail="Missing x-signature or data.id")
 
     ts = ""
@@ -704,14 +725,32 @@ async def mercadopago_webhook(
             v1_hash = v
 
     if not ts or not v1_hash:
+        await audit_repo.save(AuditLog.create(
+            action=AuditAction.WEBHOOK_SIGNATURE_INVALID,
+            actor_id=_SYSTEM_ACTOR_ID,
+            details={"reason": "Malformed x-signature header", "data_id": data_id},
+        ))
+        await session.commit()
         raise HTTPException(status_code=401, detail="Malformed x-signature header")
 
     try:
         ts_seconds = int(ts)
         now_seconds = datetime.now(timezone.utc).timestamp()
         if abs(now_seconds - ts_seconds) > cfg.mercadopago_webhook_tolerance_seconds:
+            await audit_repo.save(AuditLog.create(
+                action=AuditAction.WEBHOOK_SIGNATURE_INVALID,
+                actor_id=_SYSTEM_ACTOR_ID,
+                details={"reason": "Timestamp out of tolerance", "data_id": data_id, "ts": ts},
+            ))
+            await session.commit()
             raise HTTPException(status_code=401, detail="Webhook timestamp out of tolerance")
     except ValueError:
+        await audit_repo.save(AuditLog.create(
+            action=AuditAction.WEBHOOK_SIGNATURE_INVALID,
+            actor_id=_SYSTEM_ACTOR_ID,
+            details={"reason": "Invalid ts value", "data_id": data_id},
+        ))
+        await session.commit()
         raise HTTPException(status_code=401, detail="Invalid ts in x-signature")
 
     manifest = f"id:{data_id};request-id:{x_request_id};ts:{ts};"
@@ -731,8 +770,27 @@ async def mercadopago_webhook(
                 "manifest=%r | expected=%s | received=%s",
                 manifest, expected, v1_hash,
             )
+            await audit_repo.save(AuditLog.create(
+                action=AuditAction.WEBHOOK_SIGNATURE_VALID,
+                actor_id=_SYSTEM_ACTOR_ID,
+                details={"data_id": data_id, "signature_bypass": True},
+            ))
+            await session.flush()
         else:
+            await audit_repo.save(AuditLog.create(
+                action=AuditAction.WEBHOOK_SIGNATURE_INVALID,
+                actor_id=_SYSTEM_ACTOR_ID,
+                details={"reason": "HMAC digest mismatch", "data_id": data_id},
+            ))
+            await session.commit()
             raise HTTPException(status_code=401, detail="Invalid webhook signature")
+    else:
+        await audit_repo.save(AuditLog.create(
+            action=AuditAction.WEBHOOK_SIGNATURE_VALID,
+            actor_id=_SYSTEM_ACTOR_ID,
+            details={"data_id": data_id},
+        ))
+        await session.flush()
 
     # ---- 2. Fetch order from MP ------------------------------------------
     gateway = PixGatewayAdapter()
@@ -764,6 +822,12 @@ async def mercadopago_webhook(
             pass
 
     if not transaction:
+        await audit_repo.save(AuditLog.create(
+            action=AuditAction.WEBHOOK_UNKNOWN_TRANSACTION,
+            actor_id=_SYSTEM_ACTOR_ID,
+            details={"order_id": order_id, "external_reference": external_reference},
+        ))
+        await session.commit()
         return {"status": "unknown_transaction", "order_id": order_id}
 
     # Heal: record the MP order_id if found via fallback
@@ -785,6 +849,17 @@ async def mercadopago_webhook(
         return {"status": "invalid_amount", "order_id": order_id}
 
     if order_amount != tx_amount:
+        await audit_repo.save(AuditLog.create(
+            action=AuditAction.WEBHOOK_AMOUNT_MISMATCH,
+            actor_id=transaction.user_id,
+            target_id=transaction.id,
+            target_type="transaction",
+            details={
+                "order_id": order_id,
+                "expected_cents": transaction.amount_cents,
+                "received": str(order_amount),
+            },
+        ))
         await session.commit()
         return {
             "status": "amount_mismatch",
@@ -836,12 +911,28 @@ async def mercadopago_webhook(
             await session.commit()
             return {"status": "ignored", "transaction_type": tx_type.value}
 
+        # Services commit internally; save webhook confirmation audit in a new transaction.
+        await audit_repo.save(AuditLog.create(
+            action=AuditAction.WEBHOOK_PAYMENT_CONFIRMED,
+            actor_id=transaction.user_id,
+            target_id=transaction.id,
+            target_type="transaction",
+            details={"order_id": order_id, "transaction_type": tx_type.value},
+        ))
+        await session.commit()
         return {"status": "confirmed", "transaction_id": str(transaction.id)}
 
     if is_failed:
         if transaction.status == TransactionStatus.PENDING:
             transaction.fail()
             await transaction_repo.save(transaction)
+        await audit_repo.save(AuditLog.create(
+            action=AuditAction.WEBHOOK_PAYMENT_FAILED,
+            actor_id=transaction.user_id,
+            target_id=transaction.id,
+            target_type="transaction",
+            details={"order_id": order_id, "order_status": order_status, "payment_status": payment_status},
+        ))
         await session.commit()
         return {"status": "failed", "transaction_id": str(transaction.id)}
 
@@ -849,6 +940,13 @@ async def mercadopago_webhook(
         if transaction.status == TransactionStatus.PENDING:
             transaction.expire()
             await transaction_repo.save(transaction)
+        await audit_repo.save(AuditLog.create(
+            action=AuditAction.WEBHOOK_PAYMENT_EXPIRED,
+            actor_id=transaction.user_id,
+            target_id=transaction.id,
+            target_type="transaction",
+            details={"order_id": order_id},
+        ))
         await session.commit()
         return {"status": "expired", "transaction_id": str(transaction.id)}
 

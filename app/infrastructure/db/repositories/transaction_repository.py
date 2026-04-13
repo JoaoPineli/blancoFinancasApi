@@ -235,6 +235,56 @@ class TransactionRepository:
         await self._session.flush()
         return len(expired_ids)
 
+    async def expire_all_stale_payments(
+        self,
+        transaction_types: Optional[List[TransactionType]] = None,
+    ) -> int:
+        """Bulk-expire all pending payment transactions globally that exceeded their expiration window.
+
+        Unlike expire_stale_payments (scoped to a single user), this method
+        operates across all users and is intended for scheduled batch jobs.
+
+        Args:
+            transaction_types: Limit expiration to specific types. None applies to all.
+
+        Returns:
+            Number of transactions expired.
+        """
+        now = datetime.utcnow()
+        query = select(
+            TransactionModel.id,
+            TransactionModel.created_at,
+            TransactionModel.expiration_minutes,
+        ).where(
+            TransactionModel.status == TransactionStatus.PENDING.value,
+            TransactionModel.expiration_minutes.isnot(None),
+        )
+        if transaction_types:
+            query = query.where(
+                TransactionModel.transaction_type.in_([t.value for t in transaction_types])
+            )
+
+        result = await self._session.execute(query)
+        rows = result.all()
+        expired_ids = []
+        for row in rows:
+            created = row.created_at
+            if created.tzinfo is not None:
+                created = created.replace(tzinfo=None)
+            if now >= created + timedelta(minutes=row.expiration_minutes):
+                expired_ids.append(row.id)
+
+        if not expired_ids:
+            return 0
+
+        await self._session.execute(
+            update(TransactionModel)
+            .where(TransactionModel.id.in_(expired_ids))
+            .values(status=TransactionStatus.EXPIRED.value, updated_at=now)
+        )
+        await self._session.flush()
+        return len(expired_ids)
+
     async def save(self, transaction: Transaction) -> Transaction:
         """Save transaction (create or update)."""
         model = self._to_model(transaction)
