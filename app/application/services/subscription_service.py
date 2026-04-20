@@ -447,6 +447,60 @@ class SubscriptionService:
         )
 
     # ------------------------------------------------------------------
+    # Cancel subscription
+    # ------------------------------------------------------------------
+
+    async def cancel_subscription(
+        self, subscription_id: UUID, user_id: UUID
+    ) -> SubscriptionResult:
+        """Cancel an inactive subscription.
+
+        Only subscriptions in INACTIVE status (not yet activated) can be
+        cancelled through this method.
+
+        Args:
+            subscription_id: UUID of the subscription.
+            user_id: For authorization check.
+
+        Returns:
+            Updated SubscriptionResult with CANCELLED status.
+
+        Raises:
+            SubscriptionNotFoundError: If not found / not owned.
+            InvalidSubscriptionError: If subscription is not inactive.
+        """
+        from app.domain.entities.subscription import SubscriptionStatus
+
+        subscription = await self._subscription_repo.get_by_id(subscription_id)
+        if not subscription or subscription.user_id != user_id:
+            raise SubscriptionNotFoundError(str(subscription_id))
+
+        if subscription.status != SubscriptionStatus.INACTIVE:
+            raise InvalidSubscriptionError(
+                "Apenas planos inativos (não ativados) podem ser cancelados diretamente."
+            )
+
+        subscription.cancel()
+        saved = await self._subscription_repo.save(subscription)
+
+        audit = AuditLog.create(
+            action=AuditAction.SUBSCRIPTION_CANCELLED,
+            actor_id=user_id,
+            target_id=saved.id,
+            target_type="subscription",
+            details={"reason": "user_requested"},
+        )
+        await self._audit_repo.save(audit)
+
+        await self._session.commit()
+
+        plan = await self._plan_repo.get_by_id(saved.plan_id, include_deleted=True)
+        plan_title = plan.title if plan else "Plano removido"
+        yield_cents = await self._transaction_repo.get_yield_sum_by_subscription(saved.id)
+
+        return self._to_result(saved, plan_title, yield_cents)
+
+    # ------------------------------------------------------------------
     # Payment recording helper
     # ------------------------------------------------------------------
 

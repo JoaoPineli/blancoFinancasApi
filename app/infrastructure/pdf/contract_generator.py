@@ -62,23 +62,12 @@ class ContractPdfGenerator:
         plan: Plan,
         contract_id: UUID,
     ) -> str:
-        """Render contract HTML template.
-
-        Args:
-            user: User entity
-            plan: Plan entity
-            contract_id: Contract UUID
-
-        Returns:
-            HTML string
-        """
-        # Format monetary value
-        installment_amount = plan.monthly_installment_amount
-        installment_formatted = f"R$ {installment_amount:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
-        # Calculate total
-        total = installment_amount * plan.duration_months
-        total_formatted = f"R$ {total:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        """Render contract HTML template."""
+        max_duration = (
+            f"até {plan.max_duration_months} meses"
+            if plan.max_duration_months is not None
+            else "indeterminado"
+        )
 
         html = f"""
 <!DOCTYPE html>
@@ -178,27 +167,19 @@ class ContractPdfGenerator:
         <table class="info-table">
             <tr>
                 <td>Plano</td>
-                <td>{plan.name}</td>
+                <td>{plan.title}</td>
             </tr>
             <tr>
-                <td>Tipo</td>
-                <td>{plan.plan_type.value.replace('_', ' ').title()}</td>
+                <td>Duração mínima</td>
+                <td>{plan.min_duration_months} meses</td>
             </tr>
             <tr>
-                <td>Parcela Mensal</td>
-                <td>{installment_formatted}</td>
-            </tr>
-            <tr>
-                <td>Duração</td>
-                <td>{plan.duration_months} meses</td>
-            </tr>
-            <tr>
-                <td>Valor Total</td>
-                <td>{total_formatted}</td>
+                <td>Duração máxima</td>
+                <td>{max_duration}</td>
             </tr>
             <tr>
                 <td>Fundo de proteção</td>
-                <td>{plan.fundo_garantidor_percentage}%</td>
+                <td>{plan.guarantee_fund_percent_1}%</td>
             </tr>
         </table>
     </div>

@@ -426,6 +426,62 @@ async def get_dashboard_due_status(
 
 
 # ------------------------------------------------------------------
+# Cancel subscription endpoint
+# ------------------------------------------------------------------
+
+
+@router.post(
+    "/{subscription_id}/cancel",
+    response_model=SubscriptionResponse,
+    summary="Cancel an inactive subscription",
+)
+async def cancel_subscription(
+    subscription_id: str,
+    session: DbSession,
+    current_user: CurrentUser,
+) -> SubscriptionResponse:
+    """Cancel an inactive (not yet activated) subscription.
+
+    Only subscriptions in INACTIVE status can be cancelled through this
+    endpoint. Active subscriptions must exit via the withdrawal flow.
+    """
+    service = SubscriptionService(session)
+    try:
+        result = await service.cancel_subscription(
+            UUID(subscription_id), current_user.id
+        )
+        return SubscriptionResponse(
+            id=str(result.id),
+            user_id=str(result.user_id),
+            plan_id=str(result.plan_id),
+            plan_title=result.plan_title,
+            name=result.name,
+            target_amount_cents=result.target_amount_cents,
+            deposit_count=result.deposit_count,
+            monthly_amount_cents=result.monthly_amount_cents,
+            admin_tax_value_cents=result.admin_tax_value_cents,
+            insurance_percent=result.insurance_percent,
+            guarantee_fund_percent=result.guarantee_fund_percent,
+            total_cost_cents=result.total_cost_cents,
+            deposit_day_of_month=result.deposit_day_of_month,
+            next_due_date=result.next_due_date,
+            has_overdue_deposit=result.has_overdue_deposit,
+            status=result.status,
+            covers_activation_fees=result.covers_activation_fees,
+            created_at=result.created_at,
+            accumulated_cents=result.accumulated_cents,
+            deposits_paid=result.deposits_paid,
+            yield_cents=result.yield_cents,
+        )
+    except SubscriptionNotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
+    except InvalidSubscriptionError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.message)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+# ------------------------------------------------------------------
 # Subscription Activation Payment endpoints
 # ------------------------------------------------------------------
 

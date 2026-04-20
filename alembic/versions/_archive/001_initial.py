@@ -70,7 +70,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(['plan_id'], ['plans.id']),
         sa.PrimaryKeyConstraint('id')
     )
-    op.create_index('ix_contracts_user_id', 'contracts', ['client_id'])
+    op.create_index('ix_contracts_user_id', 'contracts', ['id'])
     op.create_index('ix_contracts_plan_id', 'contracts', ['plan_id'])
 
     # Create wallets table
@@ -84,7 +84,7 @@ def upgrade() -> None:
         sa.Column('fundo_garantidor_cents', sa.BigInteger(), nullable=False, server_default='0'),
         sa.Column('created_at', sa.DateTime(), nullable=False),
         sa.Column('updated_at', sa.DateTime(), nullable=False),
-        sa.ForeignKeyConstraint(['user_id'], ['users.id']),
+        sa.ForeignKeyConstraint(['user_id'], ['clients.id']),
         sa.PrimaryKeyConstraint('id'),
         sa.UniqueConstraint('user_id')
     )

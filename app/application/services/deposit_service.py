@@ -136,7 +136,7 @@ class CreateDepositService:
         plan = await self._plan_repo.get_by_id(contract.plan_id)
 
         # Create installment calculator
-        calculator = InstallmentCalculator(plan.fundo_garantidor_percentage)
+        calculator = InstallmentCalculator(plan.guarantee_fund_percent_1)
 
         # Calculate breakdown based on installment type
         amount = Money.from_cents(transaction.amount_cents)

@@ -73,7 +73,7 @@ class GenerateContractService:
             actor_id=user.id,
             target_id=saved_contract.id,
             target_type="contract",
-            details={"plan_id": str(plan.id), "plan_name": plan.name},
+            details={"plan_id": str(plan.id), "plan_name": plan.title},
         )
         await self._audit_repo.save(audit)
 
@@ -118,7 +118,7 @@ class GenerateContractService:
         )
 
         # Accept contract
-        contract.accept(pdf_storage_path=pdf_path, duration_months=plan.duration_months)
+        contract.accept(pdf_storage_path=pdf_path, duration_months=plan.min_duration_months)
 
         # Save updated contract
         saved_contract = await self._contract_repo.save(contract)
