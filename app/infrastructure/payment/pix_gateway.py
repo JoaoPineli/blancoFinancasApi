@@ -146,6 +146,10 @@ class PixGatewayAdapter:
             "expiration_time": "PT30M",  # ISO 8601 duration for 30 minutes
         }
 
+        notification_url = self._settings.mercadopago_notification_url.strip()
+        if notification_url:
+            body["notification_url"] = notification_url
+
         async def _do_create() -> dict:
             async with httpx.AsyncClient() as http:
                 response = await http.post(
