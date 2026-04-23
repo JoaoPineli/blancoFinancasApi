@@ -17,6 +17,7 @@ class UserResponse(BaseModel):
     status: str = Field(..., description="User status")
     phone: Optional[str] = Field(None, description="User phone")
     created_at: datetime = Field(..., description="Registration date")
+    nickname: Optional[str] = Field(None, description="User nickname (optional)")
 
 
 class UserListResponse(BaseModel):
@@ -34,6 +35,7 @@ class UpdateUserRequest(BaseModel):
     email: Optional[EmailStr] = Field(None, description="New email")
     phone: Optional[str] = Field(None, max_length=20, description="New phone")
     name: Optional[str] = Field(None, min_length=2, max_length=255, description="New name")
+    nickname: Optional[str] = Field(None, min_length=2, max_length=100, description="New nickname")
 
 
 class UserStatusRequest(BaseModel):

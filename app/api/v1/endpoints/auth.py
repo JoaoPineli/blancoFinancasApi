@@ -221,4 +221,5 @@ async def get_current_profile(
         status=current_user.status.value,
         phone=current_user.phone,
         created_at=current_user.created_at,
+        nickname=current_user.nickname,
     )
