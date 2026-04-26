@@ -147,13 +147,13 @@ class PixGatewayAdapter:
         }
 
         notification_url = self._settings.mercadopago_notification_url.strip()
-        if notification_url:
-            body["notification_url"] = notification_url
-
+        params = {"notification_url": notification_url} if notification_url else {}
+        print(f"MP create_payment params: {params}, body: {body}")  # Debug log (remove in production)
         async def _do_create() -> dict:
             async with httpx.AsyncClient() as http:
                 response = await http.post(
                     f"{base_url}/v1/orders",
+                    params=params,
                     json=body,
                     headers={
                         "Authorization": f"Bearer {access_token}",

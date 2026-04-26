@@ -88,6 +88,26 @@ class TransactionRepository:
         models = result.unique().scalars().all()
         return [self._to_entity_with_items(m) for m in models]
 
+    async def get_latest_for_subscription(
+        self,
+        subscription_id: UUID,
+        transaction_type: TransactionType,
+    ) -> Optional[Transaction]:
+        """Get the most recently created transaction of a given type for a subscription."""
+        result = await self._session.execute(
+            select(TransactionModel)
+            .options(selectinload(TransactionModel.items))
+            .join(TransactionItemModel)
+            .where(
+                TransactionItemModel.subscription_id == subscription_id,
+                TransactionModel.transaction_type == transaction_type.value,
+            )
+            .order_by(TransactionModel.created_at.desc())
+            .limit(1)
+        )
+        model = result.unique().scalars().first()
+        return self._to_entity_with_items(model) if model else None
+
     async def get_by_user_id(
         self,
         user_id: UUID,

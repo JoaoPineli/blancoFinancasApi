@@ -198,7 +198,7 @@ class SubscriptionActivationPaymentService:
     async def get_payment_for_subscription(
         self, subscription_id: UUID, user_id: UUID
     ) -> ActivationPaymentDTO:
-        """Get pending activation payment for a subscription."""
+        """Get the activation payment for a subscription (pending or most recent)."""
         sub = await self._subscription_repo.get_by_id(subscription_id)
         if not sub or sub.user_id != user_id:
             raise SubscriptionNotFoundError(str(subscription_id))
@@ -208,14 +208,18 @@ class SubscriptionActivationPaymentService:
         pending = await self._transaction_repo.get_pending_for_subscription(
             subscription_id, TransactionType.SUBSCRIPTION_ACTIVATION_PAYMENT
         )
-        if not pending:
-            raise PaymentNotFoundError(f"No pending activation for {subscription_id}")
+        if pending:
+            tx = await self._transaction_repo.get_by_id_with_items(pending[0].id)
+            if tx:
+                return self._to_dto(tx)
 
-        tx = await self._transaction_repo.get_by_id_with_items(pending[0].id)
-        if not tx:
-            raise PaymentNotFoundError(str(subscription_id))
+        latest = await self._transaction_repo.get_latest_for_subscription(
+            subscription_id, TransactionType.SUBSCRIPTION_ACTIVATION_PAYMENT
+        )
+        if not latest:
+            raise PaymentNotFoundError(f"No activation payment for {subscription_id}")
 
-        return self._to_dto(tx)
+        return self._to_dto(latest)
 
     # ------------------------------------------------------------------
     # Confirm payment (idempotent)

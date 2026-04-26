@@ -2,6 +2,7 @@
 
 import hashlib
 import hmac as _hmac
+import logging
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from io import BytesIO
@@ -73,6 +74,7 @@ from app.infrastructure.exports.excel_generator import ExcelReportGenerator
 from app.infrastructure.exports.pdf_report_generator import PdfReportGenerator
 
 router = APIRouter()
+_log = logging.getLogger(__name__)
 
 # Sentinel actor_id used in audit logs for system-initiated events (e.g. webhooks)
 # where no authenticated user is present.
@@ -672,7 +674,7 @@ async def pix_webhook(
 async def mercadopago_webhook(
     request: Request,
     session: DbSession,
-    _body: MercadoPagoWebhookPayload,  # noqa: ARG001 — parsed for OpenAPI docs only
+    body: MercadoPagoWebhookPayload,
     data_id: Optional[str] = Query(None, alias="data.id"),
     type_param: Optional[str] = Query(None, alias="type"),  # noqa: ARG001
 ) -> dict:
@@ -792,6 +794,12 @@ async def mercadopago_webhook(
         ))
         await session.flush()
 
+    # ---- 1.5. Early-ack for non-final actions ----------------------------
+    # order.action_required = waiting for payer to scan/pay; no state change needed.
+    if body.action == "order.action_required":
+        await session.commit()
+        return {"status": "acknowledged", "action": body.action}
+
     # ---- 2. Fetch order from MP ------------------------------------------
     gateway = PixGatewayAdapter()
     try:
@@ -873,7 +881,7 @@ async def mercadopago_webhook(
     payment_obj = payments_list[0] if payments_list else {}
     payment_status = payment_obj.get("status", "")
 
-    is_confirmed = order_status == "closed" and payment_status == "processed"
+    is_confirmed = order_status == "processed" and payment_status == "processed"
     is_failed = payment_status == "failed"
     is_expired = order_status == "expired"
     is_cancelled = order_status == "canceled"
@@ -886,30 +894,54 @@ async def mercadopago_webhook(
             await session.commit()
             return {"status": "already_confirmed", "transaction_id": str(transaction.id)}
 
-        if tx_type == TransactionType.DEPOSIT:
-            service = CreateDepositService(session)
-            await service.confirm_deposit(
-                transaction_id=transaction.id,
-                pix_transaction_id=order_id,
+        try:
+            if tx_type == TransactionType.DEPOSIT:
+                service = CreateDepositService(session)
+                await service.confirm_deposit(
+                    transaction_id=transaction.id,
+                    pix_transaction_id=order_id,
+                )
+            elif tx_type == TransactionType.SUBSCRIPTION_INSTALLMENT_PAYMENT:
+                service_inst = InstallmentPaymentService(session)
+                await service_inst.confirm_payment(
+                    payment_id=transaction.id,
+                    pix_transaction_id=order_id,
+                )
+            elif tx_type == TransactionType.SUBSCRIPTION_ACTIVATION_PAYMENT:
+                from app.application.services.subscription_activation_payment_service import (
+                    SubscriptionActivationPaymentService,
+                )
+                svc_act = SubscriptionActivationPaymentService(session)
+                await svc_act.confirm_payment(
+                    payment_id=transaction.id,
+                    pix_transaction_id=order_id,
+                )
+            else:
+                await session.commit()
+                return {"status": "ignored", "transaction_type": tx_type.value}
+        except ValueError as exc:
+            _log.warning(
+                "MP webhook: confirm_payment rejected for transaction %s (status=%s): %s",
+                transaction.id, transaction.status, exc,
             )
-        elif tx_type == TransactionType.SUBSCRIPTION_INSTALLMENT_PAYMENT:
-            service_inst = InstallmentPaymentService(session)
-            await service_inst.confirm_payment(
-                payment_id=transaction.id,
-                pix_transaction_id=order_id,
-            )
-        elif tx_type == TransactionType.SUBSCRIPTION_ACTIVATION_PAYMENT:
-            from app.application.services.subscription_activation_payment_service import (
-                SubscriptionActivationPaymentService,
-            )
-            svc_act = SubscriptionActivationPaymentService(session)
-            await svc_act.confirm_payment(
-                payment_id=transaction.id,
-                pix_transaction_id=order_id,
-            )
-        else:
+            await audit_repo.save(AuditLog.create(
+                action=AuditAction.WEBHOOK_PAYMENT_CONFIRMED,
+                actor_id=transaction.user_id,
+                target_id=transaction.id,
+                target_type="transaction",
+                details={
+                    "order_id": order_id,
+                    "transaction_type": tx_type.value,
+                    "skipped_reason": str(exc),
+                    "transaction_status": transaction.status.value,
+                },
+            ))
             await session.commit()
-            return {"status": "ignored", "transaction_type": tx_type.value}
+            return {
+                "status": "skipped",
+                "transaction_id": str(transaction.id),
+                "reason": str(exc),
+            }
 
         # Services commit internally; save webhook confirmation audit in a new transaction.
         await audit_repo.save(AuditLog.create(
