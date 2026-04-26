@@ -755,7 +755,9 @@ async def mercadopago_webhook(
         await session.commit()
         raise HTTPException(status_code=401, detail="Invalid ts in x-signature")
 
-    manifest = f"id:{data_id};request-id:{x_request_id};ts:{ts};"
+    # MP requires alphanumeric data.id to be lowercased in the manifest
+    # (Orders API IDs like "ORD01KQ..." — payments-API legacy IDs are numeric so this was a no-op).
+    manifest = f"id:{data_id.lower()};request-id:{x_request_id};ts:{ts};"
     secret = cfg.mercadopago_webhook_secret.get_secret_value()
     expected = _hmac.new(
         secret.encode("utf-8"),

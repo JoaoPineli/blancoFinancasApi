@@ -535,7 +535,7 @@ def _mp_signature(order_id: str, request_id: str, secret: str | None = None) -> 
         from app.infrastructure.config import get_settings
         secret = get_settings().mercadopago_webhook_secret.get_secret_value()
     ts = str(int(time.time()))
-    manifest = f"id:{order_id};request-id:{request_id};ts:{ts};"
+    manifest = f"id:{order_id.lower()};request-id:{request_id};ts:{ts};"
     v1 = _hmac.new(secret.encode(), manifest.encode(), hashlib.sha256).hexdigest()
     return f"ts={ts},v1={v1}"
 
